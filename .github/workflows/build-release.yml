@@ -1,0 +1,137 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# RUSTFLAGS is deliberately not set here: an environment variable replaces
+# `build.rustflags` from .cargo/config.toml instead of adding to it, which would
+# silently drop `-C target-feature=+crt-static` and produce a release binary
+# that needs the Visual C++ runtime installed. The lint step passes
+# `-D warnings` on its own command line.
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    # Publishing a release means writing a tag and a release to this
+    # repository. A new repository hands out a read-only token by default.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # The cache holds compiled artifacts, and those are only reusable by the
+      # exact compiler that produced them.
+      - name: Record the toolchain version
+        id: toolchain
+        shell: bash
+        run: echo "version=$(rustc --version | tr ' ()' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-${{ runner.os }}-${{ steps.toolchain.outputs.version }}-
+
+      - name: Verify the signed driver files
+        shell: pwsh
+        run: |
+          Get-ChildItem drivers | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            Write-Host "$($_.Name)  $hash"
+          }
+          Get-ChildItem drivers -Filter *.cat | ForEach-Object {
+            $signature = Get-AuthenticodeSignature $_.FullName
+            Write-Host "$($_.Name): $($signature.Status) - $($signature.SignerCertificate.Subject)"
+            if ($signature.Status -ne 'Valid') {
+              throw "$($_.Name) is not validly signed: $($signature.Status)"
+            }
+          }
+
+      # Fails when Cargo.toml and Cargo.lock disagree, which is worth saying in
+      # its own step: the alternative is a lint or test step failing for a
+      # reason that has nothing to do with the code.
+      - name: Check that the lockfile matches Cargo.toml
+        shell: pwsh
+        run: cargo metadata --locked --format-version 1 | Out-Null
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --all-targets
+
+      - name: Build
+        run: cargo build --locked --release
+
+      - name: Collect the build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/InputRedirect.exe dist/
+          Get-Item dist/InputRedirect.exe | Format-List Name, Length, LastWriteTime
+
+      # The whole point of the static CRT is that the published .exe runs on a
+      # machine without the Visual C++ redistributable, so it is checked rather
+      # than assumed.
+      #
+      # The names of imported DLLs are plain ASCII inside the executable, so the
+      # check reads the file itself. dumpbin would be the obvious tool, but it
+      # only exists inside a Visual Studio developer prompt - it is not on the
+      # runner's PATH, and pulling one in for a substring search is not worth an
+      # extra action.
+      - name: Check that the binary is statically linked
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("$PWD/dist/InputRedirect.exe")
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+
+          $dynamic = @('VCRUNTIME140', 'MSVCP140', 'api-ms-win-crt') |
+            Where-Object { $text.Contains($_) }
+
+          if ($dynamic) {
+            throw "the binary references $($dynamic -join ', '), so crt-static was not applied"
+          }
+
+          Write-Host 'No reference to the Visual C++ runtime, the CRT is linked in.'
+
+      - name: Upload the build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: InputRedirect
+          path: dist/InputRedirect.exe
+          if-no-files-found: error
+
+      - name: Publish the rolling release
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Remove the previous release together with its tag, so nothing is
+          # left pointing at an older commit. Missing is fine on a first run.
+          gh release delete latest --yes --cleanup-tag || true
+
+          # --target creates the tag on the commit just built, which keeps one
+          # command in charge of where "latest" points.
+          gh release create latest dist/InputRedirect.exe \
+            --target "$GITHUB_SHA" \
+            --title "Latest build" \
+            --notes "Automated build from commit $GITHUB_SHA." \
+            --latest

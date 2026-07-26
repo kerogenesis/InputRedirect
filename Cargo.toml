@@ -1,0 +1,95 @@
+[package]
+name = "input-redirect"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Routes the local keyboard, touchpad and mouse through a signed Logitech HID driver"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "InputRedirect"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+bitflags = "2"
+tempfile = "3"
+thiserror = "2"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Wdk_System_IO",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_RestartManager",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[build-dependencies]
+embed-resource = "3"
+
+# `panic = "abort"` must not be added here, tempting as the smaller binary is:
+# the hook callback and the console control handler both catch an unwinding
+# panic to leave the keyboard and mouse in a usable state, and aborting would
+# skip that together with every destructor - a stuck modifier key survives the
+# process.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+# Groups are given a lower priority than the single lints below them, so the
+# individual settings win no matter how Cargo orders the table.
+[lints.rust]
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# The Win32 surface is full of casts and wide pointers; forbidding them here
+# would only produce noise around calls we cannot express any other way.
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+missing_errors_doc = "allow"
+
+# Almost every Win32 call takes an out parameter, and `&mut value` reads far
+# better at those call sites than `&raw mut value`.
+borrow_as_ptr = "allow"
+
+# Counting a handful of bytes in a report descriptor does not justify pulling
+# in the bytecount crate.
+naive_bytecount = "allow"
+
+# The embedded driver file names are fixed strings we write ourselves, so a
+# plain suffix check is exactly right.
+case_sensitive_file_extension_comparisons = "allow"
+
+# The dashboard really is a handful of independent switches; turning each of
+# them into an enum would make the drawing code harder to read, not easier.
+struct_excessive_bools = "allow"
+
+# Drawing and locking helpers stay methods so the call sites read as one
+# object doing the work, even when they do not touch any field.
+unused_self = "allow"
+
+# Matching on a Result and cleaning up in the error arm is clearer than an
+# if-let with a trailing else block.
+single_match_else = "allow"

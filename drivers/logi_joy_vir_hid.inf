@@ -1,0 +1,87 @@
+;; Logitech G HUB Virtual HID Devices INF file
+;;
+;; Part of Logitech G HUB Software
+;;
+;; Copyright 2000-2017 Logitech. All rights reserved.
+
+[Version]
+Signature="$CHICAGO$"
+Class=HIDClass
+ClassGuid={745a17a0-74d3-11d0-b6fe-00a0c90f57da}
+Provider=%Vendor%
+DriverVer=02/26/2021,2021.1.1365.0
+CatalogFile=logi_joy_vir_hid.cat
+
+[SourceDisksNames]
+55=%DiskDesc%,,,
+
+[SourceDisksFiles]
+logi_joy_vir_hid.sys=55
+
+[DestinationDirs]
+DefaultDestDir = 10,system32\drivers
+LGVirHid_Device.CopyFilesSYS  = 10,system32\drivers
+
+[ControlFlags]
+ExcludeFromSelect = *
+
+[Manufacturer]
+%StdMfg%=Standard, NTamd64
+
+[Standard.NTamd64]
+%LGVirHidDevice.DeviceDesc%=LGVirHid_Device, LGHUBDevice\LGHUBVirtualDevice
+%LGVirHidG13Joystick.DeviceDesc%=LGVirHid_Device, LGHUBDevice\VID_046D&PID_C2AB
+%LGVirHidKeyboard.DeviceDesc%=LGVirHid_Device, LGHUBDevice\VID_046D&PID_C232
+%LGVirHidMouse.DeviceDesc%=LGVirHid_Device, LGHUBDevice\VID_046D&PID_C231
+
+[LGVirHid_Device]
+CopyFiles=LGVirHid_Device.CopyFilesSYS
+AddReg    = LGVirHid_Device.AddReg
+
+[LGVirHid_Device.CopyFilesSYS]
+logi_joy_vir_hid.sys
+
+[LGVirHid_Device.Services]
+AddService = logi_joy_vir_hid, 0x00000002, Logi_Virtual_Device_Service_Inst
+
+[Logi_Virtual_Device_Service_Inst]
+DisplayName    = %LGVirHid.SVCDESC%
+ServiceType    = 1 ; SERVICE_KERNEL_DRIVER
+StartType      = 3 ; SERVICE_DEMAND_START
+ErrorControl   = 1 ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %10%\system32\drivers\logi_joy_vir_hid.sys
+LoadOrderGroup = Extended Base
+
+;-------------ADD REGs ---------------------------------------------
+[LGVirHid_Device.AddReg]
+HKLM,%LogiDevice.G13Joystick%,OEMName,,%LGVirHidG13Joystick.DeviceDesc%
+HKLM,%LogiDevice.G13Joystick%,OEMData, 00, 00, 00, 00, 10, 01, 00, 00, 00
+
+[Strings]
+Vendor = "Logitech"
+DiskDesc="Logitech G HUB"
+StdMfg = "(Standard system devices)"
+
+LGVirHid.SVCDESC = "Logitech G HUB Virtual HID Device Driver"
+
+LGVirHidDevice.DeviceDesc = "Logitech G HUB Virtual HID Device"
+LGVirHidG13Joystick.DeviceDesc = "Logitech G HUB G13 Joystick"
+LGVirHidKeyboard.DeviceDesc = "Logitech G HUB Virtual Keyboard"
+LGVirHidMouse.DeviceDesc = "Logitech G HUB Virtual Mouse"
+
+LogiDevice.G13Joystick = "System\CurrentControlSet\Control\MediaProperties\PrivateProperties\Joystick\OEM\VID_046D&PID_C2AB"
+
+[Strings.0411]
+Vendor = "Logicool"
+DiskDesc="Logicool G HUB"
+StdMfg = "(Standard system devices)"
+
+LGVirHid.SVCDESC = "Logicool G HUB Virtual HID Device Driver"
+
+LGVirHidDevice.DeviceDesc = "Logicool G HUB Virtual HID Device"
+LGVirHidG13Joystick.DeviceDesc = "Logicool G HUB G13 Joystick"
+LGVirHidKeyboard.DeviceDesc = "Logicool G HUB Virtual Keyboard"
+LGVirHidMouse.DeviceDesc = "Logicool G HUB Virtual Mouse"
+
+LogiDevice.G13Joystick = "System\CurrentControlSet\Control\MediaProperties\PrivateProperties\Joystick\OEM\VID_046D&PID_C2AB"
+

@@ -1,0 +1,85 @@
+;; Logitech G HUB Virtual Bus Enumerator INF file
+;;
+;; Part of Logitech G HUB Software
+;;
+;; Copyright 2000-2018 Logitech. All rights reserved.
+
+[Version]
+Signature="$CHICAGO$"
+Class=System
+ClassGuid={4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider=%Vendor%
+DriverVer=02/26/2021,2021.1.1365.0
+CatalogFile=logi_joy_bus_enum.cat
+
+[SourceDisksNames]
+55=%DiskDesc%,,,
+
+[SourceDisksFiles]
+logi_joy_bus_enum.sys=55
+logi_joy_xlcore.sys=55
+
+[DestinationDirs]
+DefaultDestDir = 12
+Drivers_Dir = 12
+
+[ControlFlags]
+ExcludeFromSelect = *
+
+[Manufacturer]
+%StdMfg%=Standard,NTamd64
+
+[Standard.NTamd64]
+%LogiVirtualBus.DeviceDesc%=LogiVirtualBus_Device, root\LGHUBVirtualBus
+
+[LogiVirtualBus_Device]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+logi_joy_bus_enum.sys
+logi_joy_xlcore.sys
+
+[LogiVirtualBus_Device.HW]
+AddReg = LGJoyXlCore_LogiBus_Filter.AddReg.HW
+
+[LGJoyXlCore_LogiBus_Filter.AddReg.HW]
+HKR,,"UpperFilters",0x00010000,"logi_joy_xlcore"
+
+[LogiVirtualBus_Device.Services]
+AddService = logi_joy_bus_enum, 0x00000002, Virtual_Bus_Enum_Service_Inst
+AddService = logi_joy_xlcore, , Virtual_Bus_Enum_LGJoyXlCore_Service_Inst
+
+[Virtual_Bus_Enum_Service_Inst]
+DisplayName    = %LGBusEnum.SVCDESC%
+ServiceType    = 1 ; SERVICE_KERNEL_DRIVER
+StartType      = 3 ; SERVICE_DEMAND_START
+ErrorControl   = 1 ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %10%\system32\drivers\logi_joy_bus_enum.sys
+LoadOrderGroup = Extended Base
+
+[Virtual_Bus_Enum_LGJoyXlCore_Service_Inst]
+DisplayName    = %LGJoyXlCore.SVCDESC%
+ServiceType    = 1 ;%SERVICE_KERNEL_DRIVER%
+StartType      = 3 ;%SERVICE_DEMAND_START%
+ErrorControl   = 0 ;%SERVICE_ERROR_IGNORE%
+ServiceBinary  = %10%\system32\drivers\logi_joy_xlcore.sys
+LoadOrderGroup = extended base
+
+[Strings]
+Vendor = "Logitech"
+DiskDesc="Logitech G HUB"
+StdMfg = "(Standard system devices)"
+
+LogiVirtualBus.DeviceDesc = "Logitech G HUB Virtual Bus Enumerator"
+LGJoyXlCore.SVCDESC = "Logitech G HUB Translation Layer Driver"
+LGBusEnum.SVCDESC = "Logitech G HUB Virtual Bus Enumerator Driver"
+
+[Strings.0411]
+Vendor = "Logicool"
+DiskDesc="Logicool G HUB"
+StdMfg = "(Standard system devices)"
+
+LogiVirtualBus.DeviceDesc = "Logicool G HUB Virtual Bus Enumerator"
+LGJoyXlCore.SVCDESC = "Logicool G HUB Translation Layer Driver"
+LGBusEnum.SVCDESC = "Logicool G HUB Virtual Bus Enumerator Driver"
+

@@ -1,0 +1,39 @@
+# A single line-ending standard — LF everywhere except native Windows scripts.
+# Kills the CRLF/LF warnings on Windows `git add` and prevents diff churn
+# between contributors with different core.autocrlf settings.
+
+# Default — auto-detect + normalize to LF on commit.
+* text=auto eol=lf
+
+# Explicit text (LF)
+*.rs         text eol=lf
+*.md         text eol=lf
+*.txt        text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.toml       text eol=lf
+*.json       text eol=lf
+*.rc         text eol=lf
+*.manifest   text eol=lf
+.gitignore   text eol=lf
+.gitattributes text eol=lf
+
+# Windows-native — keep CRLF (.bat/.cmd flat-out require it, and PowerShell
+# here-strings are easier to read the way the shell writes them).
+*.bat        text eol=crlf
+*.cmd        text eol=crlf
+*.ps1        text eol=crlf
+
+# Binaries — Git never touches them. The driver files are signed, so a single
+# rewritten byte would invalidate the catalog.
+*.sys        binary
+*.cat        binary
+*.inf        binary
+*.dll        binary
+*.lib        binary
+*.exe        binary
+*.pdb        binary
+*.png        binary
+*.jpg        binary
+*.ico        binary
+*.zip        binary

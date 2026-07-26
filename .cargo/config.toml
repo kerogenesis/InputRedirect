@@ -1,0 +1,14 @@
+[build]
+target = "x86_64-pc-windows-msvc"
+
+[target.x86_64-pc-windows-msvc]
+# Static CRT: the executable has to run on a machine where nothing has been
+# installed yet, which is exactly the situation this program exists for.
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Never pick a dependency version that needs a newer compiler than the one this
+# project asks for. Without this, a release published upstream today can break
+# a build of a commit that has not changed since yesterday - which is exactly
+# what happened when a new indexmap started requiring the 2024 edition.
+[resolver]
+incompatible-rust-versions = "fallback"

@@ -1,0 +1,33 @@
+# Cargo build output and the folder the workflow collects the binary into
+/target/
+/dist/
+
+# MSVC / Visual Studio
+*.suo
+*.user
+*.aps
+*.pch
+*.pdb
+*.ilk
+*.exp
+*.exe
+*.obj
+.vs/
+
+# IDE / OS junk
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Sedimentary — leftovers from previous refactors
+*.bak
+*.orig
+*.rej
+
+# Runtime-created driver temp dirs
+InputRedirect_*/
