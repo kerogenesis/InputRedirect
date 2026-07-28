@@ -33,6 +33,9 @@ const SYSTEM_DEVICE_CLASS: windows::core::GUID =
 const BUS_PACKAGE: &str = "logi_joy_bus_enum.inf";
 const HID_PACKAGE: &str = "logi_joy_vir_hid.inf";
 
+/// The plug and play utility, which is only ever the one in System32.
+const INSTALLER: &str = "pnputil.exe";
+
 /// What the plug and play utility answers when it has done the work but a
 /// restart is needed to finish it.
 ///
@@ -407,7 +410,7 @@ fn add_package(path: &Path) -> Result<Finished> {
 /// program writing into it, so a wait that is not reading at the same time
 /// would be waiting for a process that is waiting for us.
 fn pnputil<const N: usize>(arguments: [&str; N]) -> Result<Output> {
-    let child = Command::new(system32("pnputil.exe"))
+    let child = Command::new(system32(INSTALLER))
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -431,7 +434,9 @@ fn pnputil<const N: usize>(arguments: [&str; N]) -> Result<Output> {
         Err(_) => {
             // Nothing is owed to a utility that stopped answering, and leaving
             // it running would hold the driver store against the next attempt.
-            process::terminate(id);
+            // A minute has passed since it was started, so the id is only
+            // closed if it still names the utility we started.
+            process::terminate(id, |name| name.eq_ignore_ascii_case(INSTALLER));
 
             Err(Error::Install(format!(
                 "the system installer did not finish within {} seconds",
