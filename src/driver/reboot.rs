@@ -19,7 +19,7 @@ use windows::Win32::System::Registry::{
     REG_OPTION_VOLATILE, REG_SAM_FLAGS,
 };
 
-use super::wide;
+use super::{system32, wide};
 
 const KEY_PATH: &str = r"SOFTWARE\InputRedirect";
 const VALUE_NAME: &str = "RestartPending";
@@ -133,7 +133,7 @@ pub fn is_restart_pending() -> bool {
 
 /// Asks Windows to restart, giving the user a few seconds to read why.
 pub fn request_restart() -> bool {
-    Command::new("shutdown.exe")
+    Command::new(system32("shutdown.exe"))
         .args([
             "/r",
             "/t",
