@@ -15,17 +15,25 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RMENU, VK_RSHIFT, VK_RWIN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-    WM_MBUTTONUP, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_XBUTTONDOWN,
-    WM_XBUTTONUP, XBUTTON1,
+    CallNextHookEx, DispatchMessageW, GetMessageW, KillTimer, PostThreadMessageW, SetTimer,
+    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, HOOKPROC, KBDLLHOOKSTRUCT,
+    MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOWS_HOOK_ID, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1,
 };
 
 use crate::error::{Error, Result};
 use crate::hid::{Modifiers, MouseButtons};
 
 use super::{on_button, on_key, Decision};
+
+/// How often the hooks are replaced. Windows drops a low-level hook whose
+/// callback overran `LowLevelHooksTimeout` and says nothing about it, and no
+/// call reports whether a handle is still in the chain.
+///
+/// Long enough to cost nothing, short enough that a redirect that has been cut
+/// off comes back before the user gives up on it.
+const REARM_INTERVAL_MS: u32 = 30_000;
 
 /// One entry per bit in [`Modifiers`], by the key that stands for that side.
 ///
@@ -144,7 +152,7 @@ fn run(ready: &Sender<Option<u32>>) {
         let keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), None, 0);
         let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), None, 0);
 
-        let (Ok(keyboard), Ok(mouse)) = (keyboard, mouse) else {
+        let (Ok(mut keyboard), Ok(mut mouse)) = (keyboard, mouse) else {
             // Whichever one Windows did accept has to come back down here.
             // This thread is about to end, and Windows goes on calling a hook
             // whose owner is gone until it times out - with the only handle
@@ -157,6 +165,10 @@ fn run(ready: &Sender<Option<u32>>) {
 
         let _ = ready.send(Some(GetCurrentThreadId()));
 
+        // A thread timer: no window, so the message arrives here rather than
+        // through a window procedure. Zero asks Windows to pick the id.
+        let timer = SetTimer(None, 0, REARM_INTERVAL_MS, None);
+
         let mut message = MSG::default();
         loop {
             // Three answers, not two: a positive number is a message, zero is
@@ -167,12 +179,38 @@ fn run(ready: &Sender<Option<u32>>) {
                 break;
             }
 
+            if message.message == WM_TIMER {
+                rearm(WH_KEYBOARD_LL, &mut keyboard, Some(keyboard_hook));
+                rearm(WH_MOUSE_LL, &mut mouse, Some(mouse_hook));
+                continue;
+            }
+
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
 
+        if timer != 0 {
+            let _ = KillTimer(None, timer);
+        }
+
         take_down([Ok(keyboard), Ok(mouse)]);
     }
+}
+
+/// Puts a fresh hook in place of `current`, in case Windows has quietly
+/// dropped it.
+///
+/// The new one goes in before the old one comes out, so the chain is never
+/// without a hook of ours; and if Windows refuses the new one, the old handle
+/// is left exactly as it was rather than thrown away.
+fn rearm(kind: WINDOWS_HOOK_ID, current: &mut HHOOK, callback: HOOKPROC) {
+    // SAFETY: called on the thread that owns these hooks, which is the only
+    // thread allowed to install or remove them.
+    let Ok(fresh) = (unsafe { SetWindowsHookExW(kind, callback, None, 0) }) else {
+        return;
+    };
+
+    take_down([Ok(std::mem::replace(current, fresh))]);
 }
 
 /// Removes the hooks that were installed, ignoring the ones that were not.
@@ -333,6 +371,15 @@ mod tests {
         let believed = Modifiers::LEFT_CTRL | Modifiers::RIGHT_SHIFT;
 
         assert!(still_held(believed).difference(believed).is_empty());
+    }
+
+    /// Replacing the hooks costs a pair of calls, so the interval has to stay
+    /// far above the timeout that makes it necessary in the first place.
+    #[test]
+    fn the_hooks_are_replaced_rarely_enough_to_cost_nothing() {
+        let default_timeout_ms = 300;
+
+        assert!(REARM_INTERVAL_MS >= 30 * default_timeout_ms);
     }
 
     /// The failure path hands take_down whatever the two calls returned, and a
