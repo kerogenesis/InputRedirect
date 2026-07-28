@@ -47,7 +47,9 @@ pub fn stop() {
     let _ = service::stop(UPDATER_SERVICE);
 
     for their_process in theirs() {
-        process::terminate(their_process);
+        // The same question is asked again inside, of the handle rather than
+        // the id: this list is a moment old, and ids are handed out again.
+        process::terminate(their_process, is_theirs);
     }
 }
 
@@ -135,6 +137,21 @@ mod tests {
         assert!(!is_theirs("lghub_agent.exe.bak"));
         assert!(!is_theirs("my_lghub_agent.exe"));
         assert!(!is_theirs("notepad.exe"));
+    }
+
+    /// The predicate the watchdog closes processes with must not accept the
+    /// program running it, whatever happens to the ids in between.
+    #[test]
+    fn the_watchdog_would_not_close_this_program() {
+        let ours = std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+            })
+            .unwrap_or_default();
+
+        assert!(!is_theirs(&ours));
     }
 
     #[test]
