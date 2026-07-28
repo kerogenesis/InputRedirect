@@ -732,4 +732,122 @@ mod tests {
         assert_eq!(shared.stats.keystrokes, 1);
         assert_eq!(shared.stats.clicks, 1);
     }
+
+    /// A keyboard the test drives: which keys the user is really holding.
+    struct Keyboard {
+        held: [bool; 256],
+    }
+
+    impl Keyboard {
+        fn new() -> Self {
+            Self { held: [false; 256] }
+        }
+
+        /// What `hook::still_held` would answer, given this keyboard.
+        fn modifiers(&self) -> Modifiers {
+            let mut held = Modifiers::empty();
+            for usage in 0..=u8::MAX {
+                if self.held[usize::from(usage)] {
+                    if let Some(modifier) = modifier_of(usage) {
+                        held.insert(modifier);
+                    }
+                }
+            }
+            held
+        }
+
+        fn keys_down(&self) -> impl Iterator<Item = u8> + '_ {
+            (0..=u8::MAX).filter(|usage| self.held[usize::from(*usage)])
+        }
+    }
+
+    /// One event through the hook, followed by the echo the virtual device
+    /// sends back for anything that went out on the wire.
+    fn hook_event(shared: &mut Shared, keyboard: &Keyboard, usage: u8, pressed: bool) {
+        let live = keyboard.modifiers();
+        let outcome = decide_key(shared, usage, pressed, |believed| believed & live);
+
+        if let KeyOutcome::Send(report) = outcome {
+            commit_key(shared, report, usage, pressed);
+
+            // The virtual keyboard is a real HID device, so what it was just
+            // told to report comes back through the same hook.
+            assert_eq!(
+                decide_key(shared, usage, pressed, |believed| believed & live),
+                KeyOutcome::Pass,
+                "our own echo must be let through"
+            );
+        }
+    }
+
+    /// A fixed generator, so a failure is the same failure on every machine.
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, bound: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+
+            (self.0 >> 33) % bound
+        }
+    }
+
+    /// Letters, both sides of Ctrl, and both sides of Shift: enough for
+    /// shortcuts, repeats, and a report with no slot left.
+    const ALPHABET: [u8; 12] = [
+        0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xE0, 0xE4, 0xE1, 0xE5,
+    ];
+
+    /// The invariant every stuck-key bug broke: nothing may be held on the
+    /// virtual keyboard once the user is holding nothing.
+    ///
+    /// Along the way the device must never hold a key the user is not holding
+    /// either - that state is what a stuck key looks like a moment before it
+    /// becomes one.
+    #[test]
+    fn no_stream_of_keys_can_leave_one_held_on_the_device() {
+        for seed in 0..256 {
+            let mut rng = Rng(seed);
+            let mut shared = session();
+            let mut keyboard = Keyboard::new();
+
+            for _ in 0..400 {
+                let usage = ALPHABET[rng.below(ALPHABET.len() as u64) as usize];
+
+                // Presses are the more common event, and repeats of a key
+                // already down are what Windows sends while it is held.
+                let pressed = rng.below(3) != 0;
+                keyboard.held[usize::from(usage)] = pressed;
+
+                hook_event(&mut shared, &keyboard, usage, pressed);
+
+                for held in 0..=u8::MAX {
+                    assert!(
+                        !shared.keyboard.holds(held) || keyboard.held[usize::from(held)],
+                        "seed {seed}: the device holds {held:#04X} and the user does not"
+                    );
+                }
+            }
+
+            // The user lets go of everything: modifiers first, the way a hand
+            // leaves a keyboard.
+            let down: Vec<u8> = keyboard.keys_down().collect();
+            for usage in down.iter().copied().filter(|u| modifier_of(*u).is_some()) {
+                keyboard.held[usize::from(usage)] = false;
+                hook_event(&mut shared, &keyboard, usage, false);
+            }
+            for usage in down.iter().copied().filter(|u| modifier_of(*u).is_none()) {
+                keyboard.held[usize::from(usage)] = false;
+                hook_event(&mut shared, &keyboard, usage, false);
+            }
+
+            assert_eq!(
+                shared.keyboard,
+                KeyboardReport::EMPTY,
+                "seed {seed}: a key was left held on the virtual keyboard"
+            );
+        }
+    }
 }
