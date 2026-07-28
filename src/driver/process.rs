@@ -1,9 +1,7 @@
 //! The two things this program needs to know about other processes: which of
 //! them are running, and how to close one.
 //!
-//! Neither is a policy. Whose processes are worth closing, and why, is decided
-//! by the modules that ask - G HUB has to let go of the virtual devices, and
-//! the plug and play utility has to be closed when it stops answering at all.
+//! Whose processes are worth closing is decided by the modules that ask.
 
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -19,8 +17,7 @@ pub fn ids_of(wanted: impl Fn(&str) -> bool) -> Vec<u32> {
     let mut found = Vec::new();
 
     // SAFETY: the snapshot is closed on every path out of here, and the entry
-    // is given its real size before Windows is asked to fill it in - a call
-    // that would fail outright without it.
+    // is given its real size before Windows is asked to fill it in.
     unsafe {
         let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
             return found;
@@ -49,8 +46,7 @@ pub fn ids_of(wanted: impl Fn(&str) -> bool) -> Vec<u32> {
 /// Closes a process.
 ///
 /// A process that has already gone, or one we are not allowed to close, is not
-/// reported: the reason for closing it was to have it gone, and both of those
-/// mean it is not in the way any more.
+/// reported: either way it is not in the way any more.
 pub fn terminate(process: u32) {
     // SAFETY: the handle is closed on every path that opened it.
     unsafe {

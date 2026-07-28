@@ -1,18 +1,16 @@
 //! Logitech G HUB, which wants the same two virtual devices we do.
 //!
-//! G HUB plugs its own virtual keyboard and mouse through the same driver, with
-//! the very product ids this program asks for, and a product id can only be
-//! taken once. While its agent runs, our plug is turned down with an invalid
-//! parameter - the same answer the driver gives for a request it cannot read at
-//! all - so there is nothing in the failure that points at the real reason.
+//! G HUB plugs its own virtual keyboard and mouse with the very product ids
+//! this program asks for, and a product id can only be taken once. While its
+//! agent runs, our plug is turned down with an invalid parameter - the same
+//! answer the driver gives for a request it cannot read at all.
 //!
 //! Closing the agent once is not enough: its updater service starts it again a
-//! moment later. So the service is asked to stop first, and a watchdog keeps
-//! looking for as long as this program runs.
+//! moment later. So the service is stopped first, and a watchdog keeps looking
+//! for as long as this program runs.
 //!
-//! Nothing of the user's is lost by this. Profiles, macros, lighting and pointer
-//! settings live in the application's own files, not in the driver; they are
-//! applied again the next time G HUB is started.
+//! Nothing of the user's is lost: profiles, macros and lighting live in the
+//! application's own files and are applied again the next time it runs.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -33,9 +31,8 @@ const PROCESSES: [&str; 4] = [
 /// The service that starts the agent again on its own.
 const UPDATER_SERVICE: &str = "LGHUBUpdaterService";
 
-/// How long the watchdog waits between looks, and in how small a step it waits.
-/// The step is what makes stopping it feel immediate instead of costing a whole
-/// interval.
+/// How long the watchdog waits between looks, and in how small a step. The step
+/// is what makes stopping it feel immediate.
 const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 const WATCH_STEP: Duration = Duration::from_millis(100);
 
@@ -46,8 +43,7 @@ pub fn is_running() -> bool {
 
 /// Stops the updater service and closes every process of G HUB that is up.
 pub fn stop() {
-    // The service first: closing the agent while its updater is running only
-    // buys a second.
+    // The service first: closing the agent while its updater runs buys a second.
     let _ = service::stop(UPDATER_SERVICE);
 
     for their_process in theirs() {
@@ -56,7 +52,7 @@ pub fn stop() {
 }
 
 /// Keeps G HUB closed for as long as this value is alive. Dropping it stops the
-/// thread and waits for it, so nothing of ours is left looking after us.
+/// thread and waits for it.
 pub struct Watchdog {
     watching: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -93,7 +89,7 @@ impl Drop for Watchdog {
 }
 
 /// Waits out one interval in short steps. False means the watchdog was asked to
-/// stop while it waited, and the caller should not look again.
+/// stop while it waited.
 fn wait(watching: &AtomicBool) -> bool {
     let mut waited = Duration::ZERO;
 
@@ -143,8 +139,7 @@ mod tests {
 
     #[test]
     fn asking_which_of_their_processes_are_running_changes_nothing() {
-        // On a machine without G HUB both answers are empty, and on one with it
-        // they are the same list: looking must never close anything.
+        // Looking must never close anything.
         assert_eq!(theirs().len(), theirs().len());
     }
 
@@ -154,7 +149,7 @@ mod tests {
         drop(watchdog);
 
         // Getting here at all is the assertion: a watchdog that outlived its
-        // owner, or one that was never joined, would hang this test.
+        // owner would hang this test.
         let watching = AtomicBool::new(false);
         assert!(!wait(&watching));
     }
