@@ -610,7 +610,6 @@ pub(crate) fn wide(value: &str) -> Vec<u16> {
 /// formed, and going through `Display` turns whatever will not convert into
 /// replacement characters - a path to a folder that does not exist. Encoding
 /// the `OsStr` directly hands Windows back the units it gave us.
-#[allow(dead_code)] // used by the installer
 pub(crate) fn wide_path(path: &Path) -> Vec<u16> {
     path.as_os_str()
         .encode_wide()
@@ -665,8 +664,8 @@ mod tests {
     fn a_path_that_is_not_valid_unicode_keeps_its_units() {
         use std::os::windows::ffi::OsStringExt;
 
-        // A lone high surrogate: a well formed UTF-16 path Windows accepts and
-        // Rust will not turn into a str.
+        // A lone high surrogate: a path Windows accepts and Rust will not turn
+        // into a str.
         let units = [0x0043, 0x003A, 0x005C, 0xD800, 0x0000];
         let path = PathBuf::from(OsString::from_wide(&units[..units.len() - 1]));
 
@@ -729,13 +728,14 @@ mod tests {
         assert_eq!(attempts, PLUG_ATTEMPTS);
     }
 
-    /// On a machine with no virtual device of ours there is nothing to wait
-    /// for, and the wait has to notice that instead of sitting out its timeout.
+    /// The wait has to answer, not sit out its timeout. Whether the bus is
+    /// empty depends on the machine - our own program may be running in another
+    /// window - so only the promptness is asserted.
     #[test]
     fn an_empty_bus_is_noticed_without_waiting() {
         let started = Instant::now();
+        let _ = wait_for_empty_bus();
 
-        assert!(wait_for_empty_bus());
         assert!(started.elapsed() < REMOVAL_TIMEOUT);
     }
 
