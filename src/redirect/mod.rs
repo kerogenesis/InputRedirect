@@ -3,7 +3,7 @@
 //! The low-level hooks run on their own thread and decide, for every event,
 //! whether to swallow it and repeat it through the driver or to let it pass.
 //! All the state that decision needs lives in [`Shared`] behind one lock, so
-//! the hook callbacks stay short and there is exactly one place to reason about.
+//! the hook callbacks stay short and there is one place to reason about.
 
 mod combo;
 mod echo;
@@ -38,9 +38,9 @@ pub enum Decision {
 
 struct Shared {
     /// Held only while there is something to redirect to. The hooks reach the
-    /// driver from their own thread, so this reference outlives any local one -
-    /// which is why it has to be given back explicitly before the driver can
-    /// be taken apart.
+    /// driver from their own thread, so this reference outlives any local one
+    /// and has to be given back explicitly before the driver can be taken
+    /// apart.
     driver: Option<Arc<Driver>>,
     keyboard_enabled: bool,
     mouse_enabled: bool,
@@ -53,9 +53,9 @@ struct Shared {
 
 static SHARED: OnceLock<Mutex<Shared>> = OnceLock::new();
 
-/// Whether an engine currently owns the shared state. The state itself is a
-/// process-wide singleton, so a second engine would silently reset the first
-/// one's counters and leave its hooks pointing at state it no longer owns.
+/// Whether an engine currently owns the shared state. The state is a
+/// process-wide singleton, so a second engine would reset the first one's
+/// counters and leave its hooks pointing at state it no longer owns.
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// The shared state, whether or not some thread panicked while holding it.
@@ -200,9 +200,8 @@ impl Engine {
 /// Switches the keyboard redirect and, when switching it off, hands back the
 /// driver that still has keys held down on it.
 ///
-/// Sending the empty report is deliberately left to the caller: it happens
-/// after the lock is released, because the hooks must never wait on a driver
-/// call.
+/// Sending the empty report is left to the caller, after the lock is released:
+/// the hooks must never wait on a driver call.
 fn apply_keyboard(shared: &mut Shared, enabled: bool) -> Option<Arc<Driver>> {
     shared.keyboard_enabled = enabled;
     if enabled {
@@ -234,8 +233,7 @@ fn apply_mouse(shared: &mut Shared, enabled: bool) -> Option<Arc<Driver>> {
 fn release_keyboard_waiting(driver: Option<Arc<Driver>>) {
     if let Some(driver) = driver {
         // A failure here means the connection is closed, which happens only
-        // while the bus is being rebuilt - and that takes the devices with it,
-        // so there is nothing left holding anything down.
+        // while the bus is being rebuilt - and that takes the devices with it.
         let _ = driver.release_keyboard_waiting();
     }
 }
@@ -275,11 +273,8 @@ impl Drop for Engine {
 /// there is no unwinding on that path at all.
 pub fn emergency_stop() {
     // The driver is taken out from under the lock and parked only once it is
-    // let go. `park` sends to the driver and takes the connection lock, and the
-    // hooks must never be left waiting on the state lock while that happens -
-    // the same rule `on_key` and `on_button` keep. It matters most here: this
-    // also runs from the console control handler, where the time before the
-    // process is taken away is short.
+    // let go: `park` sends to the driver and takes the connection lock, and the
+    // hooks must never be left waiting on the state lock while that happens.
     let driver = {
         let Some(mut shared) = state() else {
             return;
@@ -303,9 +298,7 @@ pub fn emergency_stop() {
 /// What is to be done with one key, before anything is sent.
 ///
 /// Kept apart from [`on_key`] so the rules can be exercised without a driver:
-/// every one of them exists because of a way a key once got stuck, and none of
-/// them is reachable from a test while the decision and the driver call are one
-/// piece of code.
+/// every one of them exists because of a way a key once got stuck.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KeyOutcome {
     /// Let Windows have it.
@@ -357,18 +350,16 @@ fn decide_key(
         // A key it never sent - one passed through under a modifier, or dropped
         // for want of a slot - has its release go to Windows too, in step with
         // its press. Deciding this by what the device holds, rather than by what
-        // the watcher recorded, is what keeps a key from being stranded down on
-        // the virtual keyboard when a modifier is tapped mid-press.
+        // the watcher recorded, is what keeps a key from being stranded down
+        // when a modifier is tapped mid-press.
         return KeyOutcome::Pass;
     }
 
     // Windows repeats a held key by sending the press again, and the report for
-    // a key the device already holds is the one it is already reporting. Sending
-    // it changes nothing on the wire, so no echo ever comes back - and an echo
-    // that is expected but never arrives is spent on the next real press of that
-    // key instead, letting it through as the physical keyboard's. Swallowing the
-    // repeat without sending anything is both the correct answer and one less
-    // driver call inside the hook.
+    // a key the device already holds is the one it is already reporting.
+    // Sending it changes nothing on the wire, so no echo ever comes back - and
+    // an echo that is expected but never arrives is spent on the next real
+    // press of that key instead, letting it through as the physical keyboard's.
     if report == shared.keyboard {
         return KeyOutcome::AlreadyReported;
     }
@@ -418,7 +409,7 @@ fn on_key(event: KeyEvent) -> Decision {
         return Decision::PassThrough;
     }
 
-    remember_key(report, usage, event.pressed);
+    remember_key(&driver, report, usage, event.pressed);
 
     Decision::Swallow
 }
@@ -426,21 +417,26 @@ fn on_key(event: KeyEvent) -> Decision {
 /// Writes down what was just sent - or, if the redirect was switched off while
 /// the key was on its way, releases it again, so a key can never outlive the
 /// redirect that sent it.
-fn remember_key(report: KeyboardReport, usage: u8, pressed: bool) {
+///
+/// The driver is the one the report went out on, not whatever the shared state
+/// holds now: `emergency_stop` takes that field, and a key sent just before it
+/// would find nothing there to be released on.
+fn remember_key(driver: &Arc<Driver>, report: KeyboardReport, usage: u8, pressed: bool) {
     let undo = {
         let Some(mut shared) = state() else {
-            return;
+            // No state at all means the engine is being taken down around us,
+            // and the key just sent is still held.
+            return release_keyboard_without_waiting(Some(Arc::clone(driver)));
         };
 
         if shared.keyboard_enabled {
             commit_key(&mut shared, report, usage, pressed);
             None
         } else {
-            // The redirect was switched off between the send above and this
-            // point, and the switch-off already released everything it knew
-            // about. The key just sent is not among those, so it would stay
-            // held on the virtual keyboard - release it once the lock is let go.
-            shared.driver.clone()
+            // Switched off between the send above and this point. The
+            // switch-off released everything it knew about, and the key just
+            // sent is not among those.
+            Some(Arc::clone(driver))
         }
     };
 
@@ -463,9 +459,7 @@ fn decide_button(shared: &mut Shared, event: ButtonEvent) -> Option<MouseButtons
         // A button the virtual mouse is not holding - one whose press went to
         // Windows because the redirect was off, or because the driver refused
         // it - has its release go to Windows as well, in step with its press.
-        // Sending the report anyway would change nothing on the wire, so the
-        // real release would be swallowed for an event no device ever made,
-        // and the application would stay in the click it never saw end.
+        // Swallowing it would leave the application in a click it never saw end.
         return None;
     }
 
@@ -507,24 +501,23 @@ fn on_button(event: ButtonEvent) -> Decision {
         return Decision::PassThrough;
     }
 
-    remember_button(buttons, event);
+    remember_button(&driver, buttons, event);
 
     Decision::Swallow
 }
 
-fn remember_button(buttons: MouseButtons, event: ButtonEvent) {
+/// The mouse half of [`remember_key`], down to which driver the undo goes to.
+fn remember_button(driver: &Arc<Driver>, buttons: MouseButtons, event: ButtonEvent) {
     let undo = {
         let Some(mut shared) = state() else {
-            return;
+            return release_mouse_without_waiting(Some(Arc::clone(driver)));
         };
 
         if shared.mouse_enabled {
             commit_button(&mut shared, buttons, event);
             None
         } else {
-            // Switched off mid-send: release the button just sent, the same way
-            // `remember_key` releases the key just sent.
-            shared.driver.clone()
+            Some(Arc::clone(driver))
         }
     };
 
@@ -608,10 +601,10 @@ mod tests {
         assert_eq!(echo_of(&mut shared, KEY_A, true), KeyOutcome::Pass);
     }
 
-    /// The stuck-key bug this whole rule exists for: a key held while a
-    /// modifier is tapped used to have its release decided by the combo
-    /// watcher, which by then believed the key had gone to Windows - so the
-    /// virtual keyboard was never told to let go, and the key repeated forever.
+    /// The stuck-key bug this rule exists for: a key held while a modifier is
+    /// tapped used to have its release decided by the combo watcher, which by
+    /// then believed the key had gone to Windows - so the virtual keyboard was
+    /// never told to let go, and the key repeated forever.
     #[test]
     fn a_key_held_while_a_modifier_is_tapped_is_still_released_on_the_device() {
         let mut shared = session();
@@ -644,9 +637,8 @@ mod tests {
     }
 
     /// An auto-repeat would produce the very report the device is already
-    /// sending. Sending it again costs a driver call inside the hook and, worse,
-    /// records an echo that never arrives - which the next real press of that
-    /// key is then spent on.
+    /// sending, and record an echo that never arrives - which the next real
+    /// press of that key would then be spent on.
     #[test]
     fn a_repeat_of_a_held_key_sends_nothing_and_is_still_swallowed() {
         let mut shared = session();
@@ -703,7 +695,7 @@ mod tests {
 
     /// The mouse half of the stuck-key rule: a button pressed while the
     /// redirect was off reached the application, so its release has to reach
-    /// the application too - swallowing it leaves the click going forever.
+    /// the application too.
     #[test]
     fn the_release_of_a_button_the_device_never_pressed_goes_to_windows() {
         let mut shared = session();
