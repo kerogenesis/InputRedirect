@@ -16,9 +16,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL,
-    WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_QUIT,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1,
+    TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_XBUTTONDOWN,
+    WM_XBUTTONUP, XBUTTON1,
 };
 
 use crate::error::{Error, Result};
@@ -28,8 +29,8 @@ use super::{on_button, on_key, Decision};
 
 /// One entry per bit in [`Modifiers`], by the key that stands for that side.
 ///
-/// The sided virtual keys are the only ones that will do: the merged `VK_CONTROL`
-/// and friends answer for either side at once, and could never clear just one.
+/// The sided virtual keys are the only ones that will do: the merged
+/// `VK_CONTROL` and friends answer for either side at once.
 const SIDED_MODIFIERS: [(VIRTUAL_KEY, Modifiers); 8] = [
     (VK_LCONTROL, Modifiers::LEFT_CTRL),
     (VK_LSHIFT, Modifiers::LEFT_SHIFT),
@@ -46,11 +47,10 @@ const SIDED_MODIFIERS: [(VIRTUAL_KEY, Modifiers); 8] = [
 /// Asked only when the combo watcher believes a modifier is down, so the path
 /// every ordinary keystroke takes never reaches it.
 ///
-/// The async key state is the right thing to ask: it belongs to the session
-/// rather than to a window, so it is still right after the keyboard has been
-/// somewhere this hook cannot follow. `GetKeyboardState` would not do - it
-/// answers for the calling thread's input queue, and the hook thread is not
-/// attached to the one the user is typing into.
+/// The async key state belongs to the session rather than to a window, so it is
+/// still right after the keyboard has been somewhere this hook cannot follow.
+/// `GetKeyboardState` answers for the calling thread's input queue, and the
+/// hook thread is not attached to the one the user is typing into.
 pub fn live_modifiers() -> Modifiers {
     let mut held = Modifiers::empty();
 
@@ -58,7 +58,7 @@ pub fn live_modifiers() -> Modifiers {
         // SAFETY: the call takes a virtual key code and no pointer or handle.
         let state = unsafe { GetAsyncKeyState(i32::from(key.0)) };
 
-        // The high bit is "down now"; the low one only means "pressed since
+        // The high bit is "down now". The low one only means "pressed since
         // this was last asked", which is a different question.
         if state as u16 & 0x8000 != 0 {
             held.insert(modifier);
@@ -139,6 +139,12 @@ fn run(ready: &Sender<Option<u32>>) {
         let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), None, 0);
 
         let (Ok(keyboard), Ok(mouse)) = (keyboard, mouse) else {
+            // Whichever one Windows did accept has to come back down here.
+            // This thread is about to end, and Windows goes on calling a hook
+            // whose owner is gone until it times out - with the only handle
+            // that could remove it dropped along with this frame.
+            take_down([keyboard, mouse]);
+
             let _ = ready.send(None);
             return;
         };
@@ -159,8 +165,21 @@ fn run(ready: &Sender<Option<u32>>) {
             DispatchMessageW(&message);
         }
 
-        let _ = UnhookWindowsHookEx(keyboard);
-        let _ = UnhookWindowsHookEx(mouse);
+        take_down([Ok(keyboard), Ok(mouse)]);
+    }
+}
+
+/// Removes the hooks that were installed, ignoring the ones that were not.
+///
+/// Must run on the thread that installed them, which is the only one allowed
+/// to remove them.
+fn take_down<const N: usize>(hooks: [windows::core::Result<HHOOK>; N]) {
+    for hook in hooks.into_iter().flatten() {
+        // SAFETY: each handle came from SetWindowsHookExW on this thread and is
+        // removed exactly once.
+        unsafe {
+            let _ = UnhookWindowsHookEx(hook);
+        }
     }
 }
 
@@ -283,5 +302,13 @@ mod tests {
     #[test]
     fn a_callback_that_works_keeps_its_answer() {
         assert_eq!(decided_safely(|| Decision::Swallow), Decision::Swallow);
+    }
+
+    /// The failure path hands take_down whatever the two calls returned, and a
+    /// hook that was never installed must not be removed.
+    #[test]
+    fn taking_down_hooks_that_were_never_installed_does_nothing() {
+        take_down([Err(windows::core::Error::from_win32())]);
+        take_down::<0>([]);
     }
 }
