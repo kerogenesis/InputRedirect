@@ -311,13 +311,15 @@ enum KeyOutcome {
 
 /// Decides one key against everything the session knows.
 ///
-/// `live` reports the modifiers really held, and is only consulted when the
-/// watcher believes one is down - see [`ComboWatcher::press_belongs_to_shortcut`].
+/// `still_held` is handed the modifiers the watcher believes are down and
+/// answers with the ones Windows agrees about. It is only consulted when the
+/// watcher believes something is down - see
+/// [`ComboWatcher::press_belongs_to_shortcut`].
 fn decide_key(
     shared: &mut Shared,
     usage: u8,
     pressed: bool,
-    live: impl FnOnce() -> Modifiers,
+    still_held: impl FnOnce(Modifiers) -> Modifiers,
 ) -> KeyOutcome {
     // Our own virtual keyboard reports back through the same hook. Letting the
     // echo through is what keeps the two devices from feeding each other.
@@ -340,7 +342,7 @@ fn decide_key(
         // Shortcuts are left to Windows: a combination assembled from two
         // devices at once is what made them unreliable in the first place. And
         // a full report has no slot left to give.
-        if shared.combo.press_belongs_to_shortcut(live) || !report.press(usage) {
+        if shared.combo.press_belongs_to_shortcut(still_held) || !report.press(usage) {
             return KeyOutcome::Pass;
         }
     } else if report.holds(usage) {
@@ -395,7 +397,7 @@ fn on_key(event: KeyEvent) -> Decision {
         return Decision::PassThrough;
     };
 
-    let report = match decide_key(&mut shared, usage, event.pressed, hook::live_modifiers) {
+    let report = match decide_key(&mut shared, usage, event.pressed, hook::still_held) {
         KeyOutcome::Pass => return Decision::PassThrough,
         KeyOutcome::AlreadyReported => return Decision::Swallow,
         KeyOutcome::Send(report) => report,
@@ -548,7 +550,7 @@ mod tests {
     }
 
     /// Nothing is held on the real keyboard - the ordinary case.
-    fn nothing_held() -> Modifiers {
+    fn nothing_held(_believed: Modifiers) -> Modifiers {
         Modifiers::empty()
     }
 
@@ -615,7 +617,7 @@ mod tests {
         // A modifier goes down and up while the key stays held.
         press(&mut shared, LEFT_CTRL, true);
         assert_eq!(
-            decide_key(&mut shared, KEY_A, true, || Modifiers::LEFT_CTRL),
+            decide_key(&mut shared, KEY_A, true, |_| Modifiers::LEFT_CTRL),
             KeyOutcome::Pass,
             "a repeat under a modifier belongs to the shortcut"
         );
