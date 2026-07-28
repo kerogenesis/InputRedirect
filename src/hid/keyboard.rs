@@ -20,15 +20,17 @@ bitflags! {
 }
 
 /// The set of keys the virtual keyboard currently reports as held.
+///
+/// No modifiers: a modifier is never redirected, it stays with the physical
+/// keyboard, so the modifier byte of the report is always zero. Sending our own
+/// would mean holding a modifier Windows already believes is held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyboardReport {
-    modifiers: Modifiers,
     keys: [u8; MAX_PRESSED_KEYS],
 }
 
 impl KeyboardReport {
     pub const EMPTY: Self = Self {
-        modifiers: Modifiers::empty(),
         keys: [0; MAX_PRESSED_KEYS],
     };
 
@@ -67,7 +69,6 @@ impl KeyboardReport {
     /// the report knows what the virtual keyboard is really holding.
     #[must_use]
     pub fn holds(self, usage: u8) -> bool {
-        // Zero is an empty slot, not a key, exactly as `press` refuses it.
         usage != 0 && self.keys.contains(&usage)
     }
 
@@ -75,10 +76,10 @@ impl KeyboardReport {
         *self = Self::EMPTY;
     }
 
+    /// Byte 0 is the modifier bitmap and byte 1 is reserved; both stay zero.
     #[must_use]
     pub fn to_bytes(self) -> [u8; KEYBOARD_REPORT_LEN] {
         let mut bytes = [0u8; KEYBOARD_REPORT_LEN];
-        bytes[0] = self.modifiers.bits();
         bytes[2..].copy_from_slice(&self.keys);
         bytes
     }
@@ -98,8 +99,18 @@ mod tests {
         let mut report = KeyboardReport::EMPTY;
         assert!(report.press(0x04)); // "a"
 
-        // Byte 0 is the modifier bitmap, byte 1 is reserved, keys start at 2.
         assert_eq!(report.to_bytes(), [0x00, 0x00, 0x04, 0, 0, 0, 0, 0]);
+    }
+
+    /// The virtual keyboard must never claim a modifier of its own: the real
+    /// one is already holding it, and Windows would see it twice.
+    #[test]
+    fn no_report_ever_claims_a_modifier() {
+        let mut report = KeyboardReport::EMPTY;
+        for usage in [0x04, 0xE0, 0xE1, 0xE5] {
+            report.press(usage);
+            assert_eq!(report.to_bytes()[0], 0x00);
+        }
     }
 
     #[test]
