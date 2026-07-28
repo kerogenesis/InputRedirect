@@ -38,16 +38,23 @@ impl ComboWatcher {
 
     /// Whether the press being handled belongs to a shortcut.
     ///
-    /// `live` reports the modifiers really held, and is asked only when this
-    /// watcher believes one is down - the one belief that can be wrong. A
+    /// `still_held` is given what this watcher believes and answers with the
+    /// part of it Windows agrees is really down. It is asked only when
+    /// something is believed held - the one belief that can be wrong. A
     /// modifier released while another desktop had the keyboard is never seen
     /// here, and would otherwise be believed held for the rest of the session.
-    pub fn press_belongs_to_shortcut(&mut self, live: impl FnOnce() -> Modifiers) -> bool {
+    ///
+    /// Nothing outside the believed set is worth asking about: it is about to
+    /// be intersected away.
+    pub fn press_belongs_to_shortcut(
+        &mut self,
+        still_held: impl FnOnce(Modifiers) -> Modifiers,
+    ) -> bool {
         if self.held_modifiers.is_empty() {
             return false;
         }
 
-        self.held_modifiers &= live();
+        self.held_modifiers &= still_held(self.held_modifiers);
 
         !self.held_modifiers.is_empty()
     }
@@ -67,14 +74,9 @@ mod tests {
     const KEY_A: u8 = 0x04;
     const KEY_C: u8 = 0x06;
 
-    /// Stands in for the real keyboard agreeing with everything the hook saw.
-    fn honest(watcher: &ComboWatcher) -> Modifiers {
-        watcher.held_modifiers
-    }
-
+    /// The real keyboard agreeing with everything the hook saw.
     fn belongs_to_shortcut(watcher: &mut ComboWatcher) -> bool {
-        let live = honest(watcher);
-        watcher.press_belongs_to_shortcut(|| live)
+        watcher.press_belongs_to_shortcut(|believed| believed)
     }
 
     #[test]
@@ -135,7 +137,7 @@ mod tests {
         watcher.note(LEFT_CTRL, true);
 
         // Windows says nothing is held any more: the release went elsewhere.
-        assert!(!watcher.press_belongs_to_shortcut(Modifiers::empty));
+        assert!(!watcher.press_belongs_to_shortcut(|_| Modifiers::empty()));
 
         // And the watcher believes it from now on, without asking again.
         assert!(!belongs_to_shortcut(&mut watcher));
@@ -148,8 +150,21 @@ mod tests {
         watcher.note(LEFT_CTRL, true);
         watcher.note(LEFT_ALT, true);
 
-        assert!(watcher.press_belongs_to_shortcut(|| Modifiers::LEFT_ALT));
+        assert!(watcher.press_belongs_to_shortcut(|_| Modifiers::LEFT_ALT));
         assert_eq!(watcher.held_modifiers, Modifiers::LEFT_ALT);
+    }
+
+    /// Windows is only ever asked about what is believed held, because that is
+    /// all the intersection can keep.
+    #[test]
+    fn only_the_modifiers_believed_held_are_asked_about() {
+        let mut watcher = ComboWatcher::default();
+        watcher.note(LEFT_CTRL, true);
+
+        watcher.press_belongs_to_shortcut(|believed| {
+            assert_eq!(believed, Modifiers::LEFT_CTRL);
+            believed
+        });
     }
 
     /// Nothing is asked of Windows on the path every keystroke takes.
@@ -158,6 +173,6 @@ mod tests {
         let mut watcher = ComboWatcher::default();
         watcher.note(KEY_A, true);
 
-        assert!(!watcher.press_belongs_to_shortcut(|| panic!("asked Windows for nothing")));
+        assert!(!watcher.press_belongs_to_shortcut(|_| panic!("asked Windows for nothing")));
     }
 }
