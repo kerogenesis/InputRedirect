@@ -35,6 +35,32 @@ const CORE_INTERFACE: GUID = GUID::from_u128(0x1abc_05c0_c378_41b9_9cef_df1a_ba8
 /// there is no reliable thing to look at in between.
 const PLUG_SETTLE: Duration = Duration::from_millis(200);
 
+/// A device information set that Windows takes back when it goes out of scope.
+///
+/// The set holds enumeration state on the kernel side, and every user of one is
+/// a loop with early exits in it, so the destroy call belongs to the scope
+/// rather than to a line at the end of it.
+pub(super) struct DeviceInfoSet(HDEVINFO);
+
+impl DeviceInfoSet {
+    pub(super) fn new(set: HDEVINFO) -> Self {
+        Self(set)
+    }
+
+    pub(super) fn handle(&self) -> HDEVINFO {
+        self.0
+    }
+}
+
+impl Drop for DeviceInfoSet {
+    fn drop(&mut self) {
+        // SAFETY: the set came from SetupDi and is destroyed exactly once.
+        unsafe {
+            let _ = SetupDiDestroyDeviceInfoList(self.0);
+        }
+    }
+}
+
 /// The id the driver hands back for a device it created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtualDeviceId(u32);
@@ -99,11 +125,10 @@ impl Devices {
 
     /// Creates one virtual device and reads back the id the driver gave it.
     ///
-    /// The id can come back as zero, which means the driver created the device
-    /// but did not say which one it is. That is not treated as a failure here -
-    /// the device does work - but it cannot be asked for by id afterwards, so
-    /// [`Self::unplug`] turns it into a refusal and the caller falls back to
-    /// taking the device off the bus the hard way.
+    /// The id can come back as zero, meaning the driver created the device but
+    /// did not say which one it is. The device works, but it cannot be asked
+    /// for by id afterwards, so [`Self::unplug`] turns that into a refusal and
+    /// the caller takes the device off the bus the hard way.
     fn plug(&self, kind: DeviceKind) -> Result<VirtualDeviceId> {
         let handle = self.handle()?;
         let mut payload = ioctl::plug_payload(kind);
@@ -123,14 +148,12 @@ impl Devices {
 
     /// Asks the driver to take a virtual device away.
     ///
-    /// The answer is returned rather than dropped, because it decides what has
-    /// to happen next: a device the driver still owns keeps its product id, and
-    /// the next plug of the same device is answered with an invalid parameter
-    /// that says nothing about the real reason.
+    /// The answer decides what happens next: a device the driver still owns
+    /// keeps its product id, and the next plug of the same device is refused
+    /// with an invalid parameter that says nothing about the real reason.
     pub fn unplug(&self, id: VirtualDeviceId) -> Result<()> {
         // Zero is not an id the driver ever handed out - it is what is read
-        // back when the driver named nothing - so there is nothing to ask for
-        // here, and asking would only be refused.
+        // back when the driver named nothing - so there is nothing to ask for.
         if id.0 == 0 {
             return Err(Error::Device(
                 "the driver never said which device it created".to_owned(),
@@ -214,8 +237,8 @@ fn open_native(path: &str) -> Option<HANDLE> {
 fn interface_paths(interface: &GUID) -> Vec<String> {
     let mut paths = Vec::new();
 
-    // SAFETY: the device information set is destroyed before returning, and
-    // every buffer handed to SetupDi is sized from the size it asked for.
+    // SAFETY: every buffer handed to SetupDi is sized from the size it asked
+    // for, and the set outlives the calls that read from it.
     unsafe {
         let Ok(set) = SetupDiGetClassDevsW(
             Some(interface),
@@ -225,6 +248,7 @@ fn interface_paths(interface: &GUID) -> Vec<String> {
         ) else {
             return paths;
         };
+        let set = DeviceInfoSet::new(set);
 
         let mut index = 0;
         loop {
@@ -232,13 +256,21 @@ fn interface_paths(interface: &GUID) -> Vec<String> {
                 cbSize: std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
                 ..Default::default()
             };
-            if SetupDiEnumDeviceInterfaces(set, None, interface, index, &mut data).is_err() {
+            if SetupDiEnumDeviceInterfaces(set.handle(), None, interface, index, &mut data).is_err()
+            {
                 break;
             }
             index += 1;
 
             let mut needed = 0;
-            let _ = SetupDiGetDeviceInterfaceDetailW(set, &data, None, 0, Some(&mut needed), None);
+            let _ = SetupDiGetDeviceInterfaceDetailW(
+                set.handle(),
+                &data,
+                None,
+                0,
+                Some(&mut needed),
+                None,
+            );
             if needed == 0 {
                 continue;
             }
@@ -253,8 +285,15 @@ fn interface_paths(interface: &GUID) -> Vec<String> {
                 .cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
             (*detail).cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
 
-            if SetupDiGetDeviceInterfaceDetailW(set, &data, Some(detail), needed, None, None)
-                .is_ok()
+            if SetupDiGetDeviceInterfaceDetailW(
+                set.handle(),
+                &data,
+                Some(detail),
+                needed,
+                None,
+                None,
+            )
+            .is_ok()
             {
                 let text = PCWSTR((*detail).DevicePath.as_ptr()).to_string();
                 if let Ok(path) = text {
@@ -262,8 +301,6 @@ fn interface_paths(interface: &GUID) -> Vec<String> {
                 }
             }
         }
-
-        let _ = SetupDiDestroyDeviceInfoList(HDEVINFO(set.0));
     }
 
     paths
@@ -294,6 +331,15 @@ mod tests {
         let native = r"\??\ROOT#SYSTEM#0002#{1abc05c0}";
 
         assert_eq!(to_native_path(native), native);
+    }
+
+    /// Enumerating an interface nobody publishes has to end quietly, and the
+    /// set it opened along the way has to be given back.
+    #[test]
+    fn an_interface_nobody_publishes_yields_no_paths() {
+        let nobody = GUID::from_u128(0x0000_0000_dead_4000_8000_0000_0000_0001);
+
+        assert!(interface_paths(&nobody).is_empty());
     }
 
     /// The refusal is what tells the caller to take the device off the bus
