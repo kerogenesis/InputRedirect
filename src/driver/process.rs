@@ -16,6 +16,27 @@ use windows::Win32::System::Threading::{
 /// Long enough for any path Windows will hand back, including the long ones.
 const LONGEST_PATH: usize = 1024;
 
+/// A handle that is closed when it goes out of scope.
+///
+/// Used for both the process listing and the processes it names, so no path
+/// out of the functions below can leave a kernel handle behind.
+struct OwnedHandle(HANDLE);
+
+impl OwnedHandle {
+    fn get(&self) -> HANDLE {
+        self.0
+    }
+}
+
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from Windows and is closed exactly once.
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
 /// The ids of the running processes whose file name `wanted` accepts.
 ///
 /// Looking changes nothing, which is worth saying because the caller usually
@@ -23,28 +44,27 @@ const LONGEST_PATH: usize = 1024;
 pub fn ids_of(wanted: impl Fn(&str) -> bool) -> Vec<u32> {
     let mut found = Vec::new();
 
-    // SAFETY: the snapshot is closed on every path out of here, and the entry
-    // is given its real size before Windows is asked to fill it in.
+    // SAFETY: the entry is given its real size before Windows is asked to fill
+    // it in, and the snapshot outlives every call that reads from it.
     unsafe {
         let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
             return found;
         };
+        let snapshot = OwnedHandle(snapshot);
 
         let mut entry = PROCESSENTRY32W {
             dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
             ..Default::default()
         };
 
-        let mut listed = Process32FirstW(snapshot, &mut entry).is_ok();
+        let mut listed = Process32FirstW(snapshot.get(), &mut entry).is_ok();
         while listed {
             if wanted(&name_of(&entry)) {
                 found.push(entry.th32ProcessID);
             }
 
-            listed = Process32NextW(snapshot, &mut entry).is_ok();
+            listed = Process32NextW(snapshot.get(), &mut entry).is_ok();
         }
-
-        let _ = CloseHandle(snapshot);
     }
 
     found
@@ -66,21 +86,25 @@ pub fn ids_of(wanted: impl Fn(&str) -> bool) -> Vec<u32> {
 /// A process that has already gone, or one we are not allowed to close, is not
 /// reported: either way it is not in the way any more.
 pub fn terminate(process: u32, wanted: impl Fn(&str) -> bool) {
-    // SAFETY: the handle is closed on every path that opened it.
-    unsafe {
-        let Ok(handle) = OpenProcess(
+    // SAFETY: the handle is owned by the guard below and closed with it.
+    let opened = unsafe {
+        OpenProcess(
             PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
             false,
             process,
-        ) else {
-            return;
-        };
+        )
+    };
 
-        if image_name(handle).is_some_and(|name| wanted(&name)) {
-            let _ = TerminateProcess(handle, 0);
+    let Ok(handle) = opened else {
+        return;
+    };
+    let handle = OwnedHandle(handle);
+
+    if image_name(handle.get()).is_some_and(|name| wanted(&name)) {
+        // SAFETY: the handle names the process whose image was just read.
+        unsafe {
+            let _ = TerminateProcess(handle.get(), 0);
         }
-
-        let _ = CloseHandle(handle);
     }
 }
 
@@ -149,6 +173,14 @@ mod tests {
         assert!(!ids_of(|name| name.eq_ignore_ascii_case(&ours())).is_empty());
     }
 
+    /// Listing repeatedly must not run the process out of handles.
+    #[test]
+    fn listing_over_and_over_leaves_nothing_open() {
+        for _ in 0..64 {
+            assert!(!ids_of(|name| name.eq_ignore_ascii_case(&ours())).is_empty());
+        }
+    }
+
     /// The process this test runs in is the one case where the outcome of a
     /// refused termination can be observed: reaching the next line is it.
     #[test]
@@ -170,8 +202,7 @@ mod tests {
     #[test]
     fn the_name_read_from_a_handle_is_the_one_the_listing_reports() {
         // SAFETY: a pseudo handle to this process; nothing is opened or closed.
-        let ourselves =
-            unsafe { windows::Win32::System::Threading::GetCurrentProcess() };
+        let ourselves = unsafe { windows::Win32::System::Threading::GetCurrentProcess() };
 
         assert_eq!(
             image_name(ourselves).map(|name| name.to_lowercase()),
