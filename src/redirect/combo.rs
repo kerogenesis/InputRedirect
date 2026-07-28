@@ -1,18 +1,15 @@
 //! Deciding which keys are part of a shortcut.
 //!
 //! Rebuilding a shortcut on the virtual keyboard is unreliable: the modifier is
-//! seen by Windows on one device and the letter on another, and some
-//! combinations - the secure attention sequence above all - are never delivered
-//! at all. So while a modifier is held, the keyboard is left alone.
+//! seen on one device and the letter on another, and some combinations - the
+//! secure attention sequence above all - are never delivered. So while a
+//! modifier is held, the keyboard is left alone.
 //!
-//! This runs inside the low level keyboard hook, where every millisecond spent
-//! is a millisecond of input lag for the whole desktop, so the set of held
-//! modifiers is a single bitflag and nothing here allocates.
+//! This runs inside the low level keyboard hook, so the set of held modifiers
+//! is a single bitflag and nothing here allocates.
 //!
 //! Only presses are decided here. A release is decided by what the virtual
-//! keyboard is actually holding, which the report itself knows and this watcher
-//! cannot: a key can reach Windows without ever being pressed on the virtual
-//! device, and its release then has to follow it there.
+//! keyboard is actually holding, which only the report knows.
 
 use crate::hid::{modifier_of, Modifiers};
 
@@ -24,9 +21,9 @@ pub struct ComboWatcher {
 impl ComboWatcher {
     /// Records a modifier going down or up.
     ///
-    /// Has to be called for every key, modifier or not, and before anything
-    /// else looks at the watcher: the set of held modifiers is what every press
-    /// after it is judged against.
+    /// Has to be called for every key, and before anything else looks at the
+    /// watcher: the set of held modifiers is what later presses are judged
+    /// against.
     pub fn note(&mut self, usage: u8, pressed: bool) {
         let Some(modifier) = modifier_of(usage) else {
             return;
@@ -39,17 +36,12 @@ impl ComboWatcher {
         }
     }
 
-    /// Whether the press being handled belongs to a shortcut, and so has to be
-    /// left to Windows.
+    /// Whether the press being handled belongs to a shortcut.
     ///
-    /// `live` reports the modifiers really held right now, and is asked only
-    /// when this watcher believes one is down - which is the belief that can be
-    /// wrong, and the only case where the answer is not already "redirect it".
-    /// A modifier released while another desktop had the keyboard - the lock
-    /// screen, the secure attention sequence, a prompt for administrator
-    /// rights - is never seen by this hook, and without this the watcher would
-    /// go on believing it held for the rest of the session, quietly leaving
-    /// every keystroke to Windows while the screen says the redirect is on.
+    /// `live` reports the modifiers really held, and is asked only when this
+    /// watcher believes one is down - the one belief that can be wrong. A
+    /// modifier released while another desktop had the keyboard is never seen
+    /// here, and would otherwise be believed held for the rest of the session.
     pub fn press_belongs_to_shortcut(&mut self, live: impl FnOnce() -> Modifiers) -> bool {
         if self.held_modifiers.is_empty() {
             return false;
@@ -60,8 +52,7 @@ impl ComboWatcher {
         !self.held_modifiers.is_empty()
     }
 
-    /// Forgets modifiers that were held when the redirect was switched off, so
-    /// the next session does not start out thinking one is still down.
+    /// Forgets modifiers held when the redirect was switched off.
     pub fn clear(&mut self) {
         self.held_modifiers = Modifiers::empty();
     }
@@ -137,8 +128,7 @@ mod tests {
     }
 
     /// The lock screen takes the keyboard away and gives back a modifier that
-    /// was never released here. Believing it forever is what used to leave the
-    /// redirect switched on and doing nothing.
+    /// was never released here.
     #[test]
     fn a_modifier_released_on_another_desktop_stops_holding_the_redirect_back() {
         let mut watcher = ComboWatcher::default();
@@ -151,8 +141,7 @@ mod tests {
         assert!(!belongs_to_shortcut(&mut watcher));
     }
 
-    /// Only the modifier that really went away is forgotten - one the user is
-    /// still holding keeps its shortcut.
+    /// Only the modifier that really went away is forgotten.
     #[test]
     fn a_modifier_that_is_still_held_survives_the_reconciliation() {
         let mut watcher = ComboWatcher::default();
@@ -163,8 +152,7 @@ mod tests {
         assert_eq!(watcher.held_modifiers, Modifiers::LEFT_ALT);
     }
 
-    /// Nothing is asked of Windows on the path every keystroke takes, which is
-    /// the one that must stay short.
+    /// Nothing is asked of Windows on the path every keystroke takes.
     #[test]
     fn the_common_case_never_asks_what_is_really_held() {
         let mut watcher = ComboWatcher::default();

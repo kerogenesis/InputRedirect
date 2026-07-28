@@ -2,23 +2,21 @@
 //!
 //! The virtual keyboard and mouse are real HID devices, so everything they
 //! report arrives at the hooks a moment later. Each injected event is counted
-//! here and the matching echo is let through untouched; without this the first
-//! key press would loop forever.
+//! here and the matching echo is let through; without this the first key press
+//! would loop forever.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::hid::MouseButtons;
 
-/// How many echoes may pile up for one key before the oldest are forgotten.
-/// A backlog can only mean the echo never arrived - a lost event is better
-/// than a key that stays swallowed.
+/// How many echoes may pile up for one key before the oldest are forgotten. A
+/// backlog can only mean the echo never arrived.
 const MAX_PENDING: u8 = 8;
 
 /// How long an expected echo stays expected. The driver answers in about a
-/// millisecond; anything still waiting after this never arrived, and holding on
-/// to it would swallow a real key press the user makes later. The cap above is
-/// not enough on its own: a key pressed once and lost keeps its single count
+/// millisecond, and holding on longer would swallow a real key press. The cap
+/// above is not enough on its own: a single lost count would otherwise wait
 /// until the same key is pressed again, which may be minutes later.
 const ECHO_LIFETIME: Duration = Duration::from_millis(50);
 
@@ -63,8 +61,7 @@ impl EchoFilter {
     }
 
     /// The two devices are switched on and off separately, so each forgets only
-    /// what it was owed: clearing both would drop echoes the other one is still
-    /// waiting for, and every dropped echo is an event let through as the real
+    /// what it was owed: a dropped echo is an event let through as the real
     /// device's.
     pub fn clear_keys(&mut self) {
         self.keys.clear();
@@ -75,7 +72,7 @@ impl EchoFilter {
     }
 
     // The clock is passed in below so the lifetime above can be tested without
-    // the tests having to sleep through it.
+    // sleeping through it.
 
     fn expect_key_at(&mut self, usage: u8, pressed: bool, now: Instant) {
         increment(&mut self.keys, (usage, pressed), now);
@@ -108,8 +105,8 @@ fn increment(counters: &mut Counters, key: (u8, bool), now: Instant) {
 }
 
 fn decrement(counters: &mut Counters, key: (u8, bool), now: Instant) -> bool {
-    // Checked before taking the entry out mutably: a stale count is dropped
-    // whole, and the event that found it is treated as the user's own.
+    // A stale count is dropped whole, and the event that found it is treated as
+    // the user's own.
     if counters
         .get(&key)
         .is_some_and(|pending| pending.expires_at <= now)

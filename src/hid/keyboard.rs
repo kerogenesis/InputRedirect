@@ -32,11 +32,9 @@ impl KeyboardReport {
         keys: [0; MAX_PRESSED_KEYS],
     };
 
-    /// Returns `false` when all six slots are taken - the HID equivalent of a
-    /// keyboard that cannot report one more simultaneous key.
+    /// Returns `false` when all six slots are taken.
     pub fn press(&mut self, usage: u8) -> bool {
-        // Zero is how an empty slot is spelled, so it can never be a key: the
-        // press is refused rather than filling the report with nothing.
+        // Zero is how an empty slot is spelled, so it can never be a key.
         if usage == 0 {
             return false;
         }
@@ -63,11 +61,10 @@ impl KeyboardReport {
         }
     }
 
-    /// Whether this key is currently one of the held slots.
+    /// Whether this key is one of the held slots.
     ///
-    /// The release path asks this rather than trusting a separate record of
-    /// what was pressed: only the report knows what the virtual keyboard is
-    /// really holding, and a key must be let go of there if, and only if, it is.
+    /// The release path asks this rather than trusting a separate record: only
+    /// the report knows what the virtual keyboard is really holding.
     #[must_use]
     pub fn holds(self, usage: u8) -> bool {
         // Zero is an empty slot, not a key, exactly as `press` refuses it.
@@ -156,7 +153,7 @@ mod tests {
         report.release(0x04);
         assert!(!report.holds(0x04));
 
-        // Zero is the empty slot, never a held key, however many slots are free.
+        // Zero is the empty slot, never a held key.
         assert!(!report.holds(0));
     }
 
