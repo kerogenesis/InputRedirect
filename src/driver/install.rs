@@ -15,14 +15,15 @@ use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiCallClassInstaller, SetupDiCreateDeviceInfoList, SetupDiCreateDeviceInfoW,
-    SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-    SetupDiGetDeviceInstanceIdW, SetupDiRemoveDevice, SetupDiSetDeviceRegistryPropertyW,
-    UpdateDriverForPlugAndPlayDevicesW, DICD_GENERATE_ID, DIF_REGISTERDEVICE, DIGCF_ALLCLASSES,
-    DIGCF_PRESENT, HDEVINFO, INSTALLFLAG_FORCE, SPDRP_HARDWAREID, SP_DEVINFO_DATA,
+    SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW, SetupDiRemoveDevice,
+    SetupDiSetDeviceRegistryPropertyW, UpdateDriverForPlugAndPlayDevicesW, DICD_GENERATE_ID,
+    DIF_REGISTERDEVICE, DIGCF_ALLCLASSES, DIGCF_PRESENT, INSTALLFLAG_FORCE, SPDRP_HARDWAREID,
+    SP_DEVINFO_DATA,
 };
 
 use crate::error::{Error, Result};
 
+use super::device::DeviceInfoSet;
 use super::{holders, process, service, system32, version, wide};
 
 /// The device the bus driver binds to. It does not exist until we create it.
@@ -45,15 +46,12 @@ const INSTALLER: &str = "pnputil.exe";
 /// which is why the answer is carried out of here rather than dropped.
 const RESTART_TO_FINISH: i32 = 3010;
 
-/// How long the plug and play utility is given to finish.
-///
-/// It normally answers in a second or two. The deadline is for the case where
-/// it never answers at all: without one the program hung on its way up, and the
-/// only way out was the task manager.
+/// How long the plug and play utility is given to finish. It normally answers
+/// in a second or two; the deadline is for the case where it never answers at
+/// all, which used to hang the program on its way up.
 const INSTALLER_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long the services are given to come up, and how often to look. A wait
-/// for something to happen rather than a pause in the hope that it did.
+/// How long the services are given to come up, and how often to look.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
 const STARTUP_POLL: Duration = Duration::from_millis(50);
 
@@ -134,8 +132,7 @@ fn is_the_build_we_speak_to(drivers: &Path, finished: Finished) -> Result<()> {
 ///
 /// Unlike a removal, a step that only finishes after a restart is not treated
 /// as done here - the old images would go on answering, which is the situation
-/// this function exists to get out of. Whether that happened is read back from
-/// the files rather than assumed from the answer.
+/// this function exists to get out of.
 pub fn replace(drivers: &Path) -> Result<()> {
     service::stop_all();
 
@@ -214,42 +211,37 @@ fn create_root_device() -> Result<()> {
     let mut hardware_id = wide(ROOT_HARDWARE_ID);
     hardware_id.push(0); // the property is a list of strings
 
-    // SAFETY: the information list is destroyed on every path, and the
-    // property buffer is described with its real length in bytes.
+    // SAFETY: the property buffer is described with its real length in bytes,
+    // and the set is destroyed wherever this scope ends.
     unsafe {
-        let set = SetupDiCreateDeviceInfoList(Some(&SYSTEM_DEVICE_CLASS), None)
-            .map_err(|error| Error::Install(format!("device list: {error}")))?;
+        let set = DeviceInfoSet::new(
+            SetupDiCreateDeviceInfoList(Some(&SYSTEM_DEVICE_CLASS), None)
+                .map_err(|error| Error::Install(format!("device list: {error}")))?,
+        );
 
-        let result = (|| -> Result<()> {
-            let mut info = SP_DEVINFO_DATA {
-                cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
-                ..Default::default()
-            };
+        let mut info = SP_DEVINFO_DATA {
+            cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+            ..Default::default()
+        };
 
-            SetupDiCreateDeviceInfoW(
-                set,
-                PCWSTR(name.as_ptr()),
-                &SYSTEM_DEVICE_CLASS,
-                PCWSTR::null(),
-                None,
-                DICD_GENERATE_ID,
-                Some(&mut info),
-            )
-            .map_err(|error| Error::Install(format!("device node: {error}")))?;
+        SetupDiCreateDeviceInfoW(
+            set.handle(),
+            PCWSTR(name.as_ptr()),
+            &SYSTEM_DEVICE_CLASS,
+            PCWSTR::null(),
+            None,
+            DICD_GENERATE_ID,
+            Some(&mut info),
+        )
+        .map_err(|error| Error::Install(format!("device node: {error}")))?;
 
-            let bytes = std::slice::from_raw_parts(
-                hardware_id.as_ptr().cast::<u8>(),
-                hardware_id.len() * 2,
-            );
-            SetupDiSetDeviceRegistryPropertyW(set, &mut info, SPDRP_HARDWAREID, Some(bytes))
-                .map_err(|error| Error::Install(format!("hardware id: {error}")))?;
+        let bytes =
+            std::slice::from_raw_parts(hardware_id.as_ptr().cast::<u8>(), hardware_id.len() * 2);
+        SetupDiSetDeviceRegistryPropertyW(set.handle(), &mut info, SPDRP_HARDWAREID, Some(bytes))
+            .map_err(|error| Error::Install(format!("hardware id: {error}")))?;
 
-            SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set, Some(&info))
-                .map_err(|error| Error::Install(format!("device registration: {error}")))
-        })();
-
-        let _ = SetupDiDestroyDeviceInfoList(set);
-        result
+        SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set.handle(), Some(&info))
+            .map_err(|error| Error::Install(format!("device registration: {error}")))
     }
 }
 
@@ -288,13 +280,16 @@ fn visit_leftover_devices(action: Leftovers) -> i32 {
         Leftovers::Remove => DIGCF_ALLCLASSES,
     };
 
-    // SAFETY: the set is destroyed before returning and every device handed to
-    // SetupDiRemoveDevice came out of the same enumeration.
+    // Named rather than passed inline: the pointer must outlive the call.
+    let filter = wide("LGHUBDEVICE");
+
+    // SAFETY: every device handed to SetupDiRemoveDevice came out of the same
+    // enumeration, which outlives the loop.
     unsafe {
-        let Ok(set) = SetupDiGetClassDevsW(None, PCWSTR(wide("LGHUBDEVICE").as_ptr()), None, scope)
-        else {
+        let Ok(set) = SetupDiGetClassDevsW(None, PCWSTR(filter.as_ptr()), None, scope) else {
             return 0;
         };
+        let set = DeviceInfoSet::new(set);
 
         let mut index = 0;
         loop {
@@ -302,7 +297,7 @@ fn visit_leftover_devices(action: Leftovers) -> i32 {
                 cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
                 ..Default::default()
             };
-            if SetupDiEnumDeviceInfo(set, index, &mut info).is_err() {
+            if SetupDiEnumDeviceInfo(set.handle(), index, &mut info).is_err() {
                 break;
             }
             index += 1;
@@ -310,14 +305,12 @@ fn visit_leftover_devices(action: Leftovers) -> i32 {
             match action {
                 Leftovers::Count => found += 1,
                 Leftovers::Remove => {
-                    if SetupDiRemoveDevice(set, &mut info).as_bool() {
+                    if SetupDiRemoveDevice(set.handle(), &mut info).as_bool() {
                         found += 1;
                     }
                 }
             }
         }
-
-        let _ = SetupDiDestroyDeviceInfoList(set);
     }
 
     found
@@ -339,8 +332,7 @@ pub fn uninstall() -> Result<()> {
 
         // A removal that only finishes after a restart still counts as done:
         // the copy left behind is the one the kernel already has open, which is
-        // exactly what removing a loaded driver looks like. Treating it as a
-        // failure reported every ordinary removal as broken.
+        // exactly what removing a loaded driver looks like.
         let code = output.status.code().unwrap_or(-1);
         if code != 0 && code != RESTART_TO_FINISH {
             return Err(Error::Uninstall(format!(
@@ -360,7 +352,7 @@ fn blamed() -> String {
 }
 
 /// The wording, kept apart from the asking so it can be tested without a driver
-/// on the machine. A failure with nobody to blame says nothing extra.
+/// on the machine.
 fn blame(holders: &[String]) -> String {
     if holders.is_empty() {
         String::new()
@@ -460,8 +452,8 @@ struct Package {
 }
 
 impl Package {
-    /// The file name is compared without regard to case: Windows file names are
-    /// case insensitive, and mistaking our own package for someone else's would
+    /// Compared without regard to case: Windows file names are case
+    /// insensitive, and mistaking our own package for someone else's would
     /// leave the user unable to remove the driver at all.
     fn is_ours(&self) -> bool {
         [BUS_PACKAGE, HID_PACKAGE]
@@ -476,8 +468,8 @@ impl Package {
 ///
 /// The labels are deliberately ignored: Windows translates them, and a parser
 /// that matched them would report an empty driver store on a Russian or
-/// Ukrainian machine. The order of the fields and the values themselves read
-/// the same in every language.
+/// Ukrainian machine. The order of the fields and the values read the same in
+/// every language.
 ///
 /// A record therefore starts at the first value that names an .inf file, which
 /// is what separates the records from the heading printed above them.
@@ -529,7 +521,7 @@ fn find_devices(hardware_id: &str) -> Vec<String> {
     let mut found = Vec::new();
     let filter = wide(hardware_id);
 
-    // SAFETY: the set is destroyed before returning; the buffer is sized by us.
+    // SAFETY: the buffer is sized by us and the set outlives the loop.
     unsafe {
         let Ok(set) = SetupDiGetClassDevsW(
             Some(&SYSTEM_DEVICE_CLASS),
@@ -539,6 +531,7 @@ fn find_devices(hardware_id: &str) -> Vec<String> {
         ) else {
             return found;
         };
+        let set = DeviceInfoSet::new(set);
 
         let mut index = 0;
         loop {
@@ -546,20 +539,18 @@ fn find_devices(hardware_id: &str) -> Vec<String> {
                 cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
                 ..Default::default()
             };
-            if SetupDiEnumDeviceInfo(set, index, &mut info).is_err() {
+            if SetupDiEnumDeviceInfo(set.handle(), index, &mut info).is_err() {
                 break;
             }
             index += 1;
 
             let mut buffer = [0u16; 512];
-            if SetupDiGetDeviceInstanceIdW(set, &info, Some(&mut buffer), None).is_ok() {
+            if SetupDiGetDeviceInstanceIdW(set.handle(), &info, Some(&mut buffer), None).is_ok() {
                 if let Ok(id) = PCWSTR(buffer.as_ptr()).to_string() {
                     found.push(id);
                 }
             }
         }
-
-        let _ = SetupDiDestroyDeviceInfoList(HDEVINFO(set.0));
     }
 
     found
@@ -691,6 +682,13 @@ mod tests {
     #[test]
     fn counting_the_leftover_devices_leaves_them_where_they_are() {
         assert_eq!(leftover_devices(), leftover_devices());
+    }
+
+    /// Looking for a hardware id nothing answers to must end quietly and give
+    /// the set it opened back.
+    #[test]
+    fn a_hardware_id_nothing_answers_to_finds_no_devices() {
+        assert!(find_devices(r"root\NoSuchDeviceOfOurs").is_empty());
     }
 
     /// Windows did the work there and then, so there is nothing to read.
