@@ -4,8 +4,10 @@
 //! report arrives at the hooks a moment later. Each injected event is counted
 //! here and the matching echo is let through; without this the first key press
 //! would loop forever.
+//!
+//! Every lookup happens inside a low-level hook, so the counters live in flat
+//! arrays indexed by the event itself: no hashing, no allocation, no resizing.
 
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::hid::MouseButtons;
@@ -20,6 +22,12 @@ const MAX_PENDING: u8 = 8;
 /// until the same key is pressed again, which may be minutes later.
 const ECHO_LIFETIME: Duration = Duration::from_millis(50);
 
+/// Every HID usage, in both directions.
+const KEY_SLOTS: usize = 256 * 2;
+
+/// Every bit a button flag can occupy, in both directions.
+const BUTTON_SLOTS: usize = 8 * 2;
+
 /// The echoes still owed for one key or button, and when they stop counting.
 #[derive(Clone, Copy, Debug)]
 struct Pending {
@@ -27,12 +35,19 @@ struct Pending {
     expires_at: Instant,
 }
 
-type Counters = HashMap<(u8, bool), Pending>;
-
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct EchoFilter {
-    keys: Counters,
-    buttons: Counters,
+    keys: [Option<Pending>; KEY_SLOTS],
+    buttons: [Option<Pending>; BUTTON_SLOTS],
+}
+
+impl Default for EchoFilter {
+    fn default() -> Self {
+        Self {
+            keys: [None; KEY_SLOTS],
+            buttons: [None; BUTTON_SLOTS],
+        }
+    }
 }
 
 impl EchoFilter {
@@ -64,38 +79,59 @@ impl EchoFilter {
     /// what it was owed: a dropped echo is an event let through as the real
     /// device's.
     pub fn clear_keys(&mut self) {
-        self.keys.clear();
+        self.keys = [None; KEY_SLOTS];
     }
 
     pub fn clear_buttons(&mut self) {
-        self.buttons.clear();
+        self.buttons = [None; BUTTON_SLOTS];
     }
 
     // The clock is passed in below so the lifetime above can be tested without
     // sleeping through it.
 
     fn expect_key_at(&mut self, usage: u8, pressed: bool, now: Instant) {
-        increment(&mut self.keys, (usage, pressed), now);
+        increment(&mut self.keys[slot(usage, pressed)], now);
     }
 
     fn expect_button_at(&mut self, button: MouseButtons, pressed: bool, now: Instant) {
-        increment(&mut self.buttons, (button.bits(), pressed), now);
+        if let Some(index) = button_slot(button, pressed) {
+            increment(&mut self.buttons[index], now);
+        }
     }
 
     fn take_key_at(&mut self, usage: u8, pressed: bool, now: Instant) -> bool {
-        decrement(&mut self.keys, (usage, pressed), now)
+        decrement(&mut self.keys[slot(usage, pressed)], now)
     }
 
     fn take_button_at(&mut self, button: MouseButtons, pressed: bool, now: Instant) -> bool {
-        decrement(&mut self.buttons, (button.bits(), pressed), now)
+        match button_slot(button, pressed) {
+            Some(index) => decrement(&mut self.buttons[index], now),
+            None => false,
+        }
     }
+}
+
+/// Press and release are counted apart, so the direction is the low bit.
+fn slot(index: u8, pressed: bool) -> usize {
+    usize::from(index) << 1 | usize::from(pressed)
+}
+
+/// The hooks report one button at a time; anything else has no slot and is
+/// therefore never an echo of ours.
+fn button_slot(button: MouseButtons, pressed: bool) -> Option<usize> {
+    let bit = button.bits();
+    if !bit.is_power_of_two() {
+        return None;
+    }
+
+    Some(slot(bit.trailing_zeros() as u8, pressed))
 }
 
 /// Each new injection pushes the deadline out, so a held key repeating stays
 /// expected for as long as it repeats.
-fn increment(counters: &mut Counters, key: (u8, bool), now: Instant) {
+fn increment(slot: &mut Option<Pending>, now: Instant) {
     let expires_at = now + ECHO_LIFETIME;
-    let pending = counters.entry(key).or_insert(Pending {
+    let pending = slot.get_or_insert(Pending {
         count: 0,
         expires_at,
     });
@@ -104,27 +140,26 @@ fn increment(counters: &mut Counters, key: (u8, bool), now: Instant) {
     pending.expires_at = expires_at;
 }
 
-fn decrement(counters: &mut Counters, key: (u8, bool), now: Instant) -> bool {
+fn decrement(slot: &mut Option<Pending>, now: Instant) -> bool {
+    let Some(pending) = slot.as_mut() else {
+        return false;
+    };
+
     // A stale count is dropped whole, and the event that found it is treated as
     // the user's own.
-    if counters
-        .get(&key)
-        .is_some_and(|pending| pending.expires_at <= now)
-    {
-        counters.remove(&key);
-        return false;
+    let stale = pending.expires_at <= now;
+    let mut matched = false;
+    if !stale && pending.count > 0 {
+        pending.count -= 1;
+        matched = true;
     }
 
-    match counters.get_mut(&key) {
-        Some(pending) if pending.count > 0 => {
-            pending.count -= 1;
-            if pending.count == 0 {
-                counters.remove(&key);
-            }
-            true
-        }
-        _ => false,
+    let spent = stale || pending.count == 0;
+    if spent {
+        *slot = None;
     }
+
+    matched
 }
 
 #[cfg(test)]
@@ -166,6 +201,19 @@ mod tests {
         filter.expect_key(0x04, true);
 
         assert!(!filter.take_key(0x05, true));
+    }
+
+    /// The slot arithmetic has to hold at both ends of the usage range.
+    #[test]
+    fn every_usage_has_a_slot_of_its_own() {
+        let mut filter = EchoFilter::default();
+        for usage in [0x00, 0x01, 0x7F, 0xFE, 0xFF] {
+            for pressed in [true, false] {
+                filter.expect_key(usage, pressed);
+                assert!(filter.take_key(usage, pressed));
+                assert!(!filter.take_key(usage, pressed));
+            }
+        }
     }
 
     #[test]
@@ -223,6 +271,36 @@ mod tests {
         assert!(!filter.take_button(MouseButtons::RIGHT, true));
         assert!(filter.take_button(MouseButtons::LEFT, true));
         assert!(!filter.take_button(MouseButtons::LEFT, true));
+    }
+
+    /// Each flag the hooks can report gets a slot, and no two share one.
+    #[test]
+    fn every_button_has_a_slot_of_its_own() {
+        let buttons = [
+            MouseButtons::LEFT,
+            MouseButtons::RIGHT,
+            MouseButtons::MIDDLE,
+            MouseButtons::BACK,
+            MouseButtons::FORWARD,
+        ];
+
+        let mut filter = EchoFilter::default();
+        for button in buttons {
+            filter.expect_button(button, true);
+        }
+        for button in buttons {
+            assert!(filter.take_button(button, true), "{button:?}");
+        }
+    }
+
+    /// Nothing the hooks send looks like this, and it must not be mistaken for
+    /// an echo if it ever does.
+    #[test]
+    fn an_event_for_no_button_at_all_is_not_an_echo() {
+        let mut filter = EchoFilter::default();
+        filter.expect_button(MouseButtons::empty(), true);
+
+        assert!(!filter.take_button(MouseButtons::empty(), true));
     }
 
     #[test]
