@@ -23,6 +23,7 @@ pub use reboot::{
 use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fmt;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
@@ -35,10 +36,8 @@ use crate::hid::{KeyboardReport, MouseReport};
 use device::{Devices, VirtualDeviceId};
 
 /// How long the bus is given to finish taking the child devices away, and how
-/// often to look.
-///
-/// A wait for something that can be seen, rather than a pause in the hope that
-/// it happened: a pause is a guess about a machine we are not running on.
+/// often to look. A wait for something that can be seen, rather than a pause in
+/// the hope that it happened.
 const REMOVAL_TIMEOUT: Duration = Duration::from_secs(3);
 const REMOVAL_POLL: Duration = Duration::from_millis(50);
 
@@ -251,7 +250,6 @@ impl Driver {
     ///
     /// The connection goes through the same root device, so it is closed and
     /// opened again: the old handle does not survive the stack being rebuilt.
-    /// Meanwhile a report is turned down and the real key goes through instead.
     fn rebuild_bus(&self) -> Result<()> {
         self.connection().close();
 
@@ -606,12 +604,25 @@ pub(crate) fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// The same, for a path.
+///
+/// A path is not a `String`: Windows stores it as UTF-16 that need not be well
+/// formed, and going through `Display` turns whatever will not convert into
+/// replacement characters - a path to a folder that does not exist. Encoding
+/// the `OsStr` directly hands Windows back the units it gave us.
+#[allow(dead_code)] // used by the installer
+pub(crate) fn wide_path(path: &Path) -> Vec<u16> {
+    path.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
 /// An absolute path to one of the programs shipped with Windows.
 ///
 /// This process is always elevated, so a helper must never be named by its bare
 /// file name: that resolves through PATH, and a writable directory ahead of
-/// System32 would decide what an administrator runs. Neither of the two
-/// programs used here is ever anything but the system one.
+/// System32 would decide what an administrator runs.
 pub(crate) fn system32(program: &str) -> PathBuf {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| OsString::from(r"C:\Windows"));
 
@@ -638,6 +649,29 @@ mod tests {
     fn wide_strings_are_null_terminated() {
         assert_eq!(wide("ab"), vec![0x61, 0x62, 0x00]);
         assert_eq!(wide(""), vec![0x00]);
+    }
+
+    #[test]
+    fn a_path_is_encoded_the_way_windows_stores_it() {
+        let path = Path::new(r"C:\Windows\System32");
+
+        assert_eq!(wide_path(path), wide(r"C:\Windows\System32"));
+        assert_eq!(wide_path(Path::new("")), vec![0x00]);
+    }
+
+    /// The units of a path that is not valid Unicode have to survive; going
+    /// through a String would replace them.
+    #[test]
+    fn a_path_that_is_not_valid_unicode_keeps_its_units() {
+        use std::os::windows::ffi::OsStringExt;
+
+        // A lone high surrogate: a well formed UTF-16 path Windows accepts and
+        // Rust will not turn into a str.
+        let units = [0x0043, 0x003A, 0x005C, 0xD800, 0x0000];
+        let path = PathBuf::from(OsString::from_wide(&units[..units.len() - 1]));
+
+        assert_eq!(wide_path(&path), units);
+        assert!(path.to_string_lossy().contains('\u{FFFD}'));
     }
 
     /// A bare file name would be resolved through PATH by an elevated process.
