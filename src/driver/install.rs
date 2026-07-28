@@ -24,7 +24,7 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
 use crate::error::{Error, Result};
 
 use super::device::DeviceInfoSet;
-use super::{holders, process, service, system32, version, wide};
+use super::{holders, process, service, system32, version, wide, wide_path};
 
 /// The device the bus driver binds to. It does not exist until we create it.
 const ROOT_HARDWARE_ID: &str = r"root\LGHUBVirtualBus";
@@ -185,7 +185,7 @@ pub fn bind_root_device(drivers: &Path) -> Result<()> {
         create_root_device()?;
     }
 
-    let inf = wide(&drivers.join(BUS_PACKAGE).display().to_string());
+    let inf = wide_path(&drivers.join(BUS_PACKAGE));
     let hardware_id = wide(ROOT_HARDWARE_ID);
 
     // SAFETY: both strings are null terminated and outlive the call. The
