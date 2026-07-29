@@ -2,8 +2,8 @@
  <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange">
   <img src="https://img.shields.io/badge/platform-Windows-blue">
-  <img src="https://github.com/kerogenesis/InputRedirect/actions/workflows/build-release.yml/badge.svg">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg">
+  <img src="https://github.com/kerogenesis/InputRedirect/actions/workflows/ci.yml/badge.svg?branch=main">
 </p>
 
 A small Windows utility that sends your keyboard, touchpad and mouse
