@@ -678,7 +678,10 @@ mod tests {
     fn a_system_program_is_named_by_an_absolute_path() {
         let path = system32("pnputil.exe");
 
-        assert!(path.is_absolute(), "{path:?} would be resolved through PATH");
+        assert!(
+            path.is_absolute(),
+            "{path:?} would be resolved through PATH"
+        );
         assert!(path.ends_with("pnputil.exe"));
         assert!(path
             .to_string_lossy()
