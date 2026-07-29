@@ -8,6 +8,77 @@ the driver.
 This means most changes touch one of three things: the Win32/NT boundary, the
 hooks, or the per-event hot path. Read this file before opening a pull request.
 
+## Where things live
+
+| Path             | What is in it                                                     |
+| ---------------- | ----------------------------------------------------------------- |
+| `src/main.rs`    | Entry point and exit codes                                        |
+| `src/error.rs`   | The crate's error type; every failure path goes through it        |
+| `src/app/`       | Startup, shutdown, single-instance guard, and the menu actions     |
+| `src/driver/`    | Driver install and removal, virtual devices, IOCTLs, the watchdog  |
+| `src/redirect/`  | The hooks, the decision made per event, echo suppression, combos   |
+| `src/hid/`       | HID report formats, modifier flags, scan code tables               |
+| `src/ui/`        | Console output: layout, colours, the menu, keypress reading        |
+| `drivers/`       | The bundled signed driver package                                  |
+| `res/`           | Application manifest and icon resources                            |
+| `build.rs`       | Embeds the manifest and resources                                  |
+
+## Running it
+
+This is not a program that can be casually run to see what a change does:
+
+- Windows only, on `x86_64`. There is no cross-platform path and no stub.
+- The manifest requires administrator rights, so it will not start elevated by
+  accident - it either runs elevated or exits.
+- It installs a driver package into the system driver store, creates a root
+  device, and can ask for a reboot to finish. Uninstalling is a separate action
+  in the menu, not something that happens on exit.
+
+So verify changes with `cargo test` and CI. Treat an actual run as a deliberate
+act on a machine you are willing to have a driver installed on.
+
+## Before you push
+
+CI runs these, in this order, and fails the build on the first one that
+complains. Run them locally on Windows first:
+
+```
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test
+```
+
+Notes that catch people out:
+
+- **A new Win32 call needs its feature.** The `windows` crate is compiled with
+  an explicit feature list in `Cargo.toml`. Calling an API from a module that
+  is not in that list fails to compile with the item simply not existing - add
+  the feature in the same commit.
+- The `windows` crate is a moving target across versions. An associated
+  function that a tutorial or an older branch uses may no longer exist; check
+  what the pinned version actually provides rather than the name you expect.
+- `--locked` means `Cargo.lock` must already match `Cargo.toml`. Commit the
+  updated lock file together with any dependency change.
+- Clippy runs with `pedantic` and `-D warnings`. Among other things, an item
+  named in a doc comment has to be in backticks.
+- `rustfmt` runs with default settings, so an argument list wider than 60
+  characters gets split across lines even though the line fits in 100.
+- Every commit that lands on the branch should build on its own. Do not split a
+  signature change and its call sites into separate commits.
+
+## Build configuration
+
+These are pinned on purpose. A change here changes what ships, so it belongs in
+its own pull request with a reason:
+
+- `rust-toolchain.toml` pins the toolchain, and `Cargo.toml` states the minimum
+  supported version.
+- `.cargo/config.toml` sets the target to `x86_64-pc-windows-msvc` and links
+  the CRT statically, so the release binary runs without a redistributable. CI
+  checks the built executable for dynamic CRT imports.
+- The release profile uses fat LTO, one codegen unit, and strips symbols.
+- CI verifies the Authenticode signature of the bundled driver package.
+
 ## General requirements
 
 - Keep pull requests small and focused. One concern per pull request; if a
@@ -38,28 +109,6 @@ When a pull request spans several kinds of change, use the prefix that
 describes its purpose, not the largest part of the diff. Individual commits
 within the branch use the same prefixes.
 
-## Before you push
-
-CI runs these, in this order, and fails the build on the first one that
-complains. Run them locally on Windows first:
-
-```
-cargo fmt --all --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test
-```
-
-Notes that catch people out:
-
-- `--locked` means `Cargo.lock` must already match `Cargo.toml`. Commit the
-  updated lock file together with any dependency change.
-- Clippy runs with `pedantic` and `-D warnings`. Among other things, an item
-  named in a doc comment has to be in backticks.
-- `rustfmt` runs with default settings, so an argument list wider than 60
-  characters gets split across lines even though the line fits in 100.
-- Every commit that lands on the branch should build on its own. Do not split a
-  signature change and its call sites into separate commits.
-
 ## Code conventions
 
 - `unsafe_op_in_unsafe_fn` is denied. Every `unsafe` block carries a `SAFETY:`
@@ -76,6 +125,27 @@ Notes that catch people out:
 - Never let a panic cross an `extern "system"` boundary: unwinding out of a
   callback aborts the process, and an abort skips the destructors that release
   the virtual devices.
+
+## The driver interface is not ours to simplify
+
+`src/driver/ioctl.rs` describes a binary interface that belongs to the driver:
+request layouts, field offsets, packing, IOCTL codes, report descriptors, and
+the vendor and product ids the devices are published under. The driver reads
+these bytes at fixed positions.
+
+The assertions in that file are the specification. A layout that looks
+redundant, a padded field, or an odd struct size is the driver's requirement,
+not an oversight. If a change there is genuinely needed, the assertions must be
+updated deliberately and the reason stated - never relaxed to make a build pass.
+
+## Limits on what to change unasked
+
+- Do not edit `README.md` unless the change was asked for.
+- Do not add or upgrade a dependency without the matching `Cargo.lock` update
+  in the same commit.
+- Do not widen a diff beyond what was asked. If you notice something adjacent
+  that should change, say so instead of changing it.
+- Do not merge your own pull request.
 
 ## Things to leave alone
 
