@@ -79,6 +79,39 @@ its own pull request with a reason:
 - The release profile uses fat LTO, one codegen unit, and strips symbols.
 - CI verifies the Authenticode signature of the bundled driver package.
 
+## Releasing
+
+There are two workflows. `ci.yml` checks and builds every push and pull request
+and keeps the binary as a run artifact; it publishes nothing. `release.yml`
+runs only on a tag and is the only thing that creates a release.
+
+To publish version `X.Y.Z`:
+
+1. Bump `version` in `Cargo.toml`, and the `input-redirect` entry in
+   `Cargo.lock` in the same commit. The lock file is not optional here: CI
+   builds with `--locked` and will fail on a bump that only touched one file.
+2. Merge that through a pull request like any other change.
+3. Tag the merge commit and push the tag:
+
+```
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+The tag has to match the version in `Cargo.toml`; the workflow refuses to
+publish otherwise, because an archive whose name and whose executable disagree
+about the version is worse than no release. From there it verifies the driver
+signatures, runs the tests, builds, checks the binary really is statically
+linked, packs `InputRedirect.exe` and `LICENSE` into
+`InputRedirect-X.Y.Z-x86_64-windows.zip` with a `.sha256` beside it, and
+publishes a release whose notes are generated from the commits and pull
+requests since the previous tag.
+
+A tag with a suffix - `vX.Y.Z-rc1` - is published as a prerelease.
+
+Nothing here deletes or rewrites a published release. A release that went out
+wrong is superseded by the next tag, not edited in place.
+
 ## General requirements
 
 - Keep pull requests small and focused. One concern per pull request; if a
