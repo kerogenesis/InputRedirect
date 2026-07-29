@@ -20,23 +20,23 @@ bitflags! {
 }
 
 /// The set of keys the virtual keyboard currently reports as held.
+///
+/// No modifiers: a modifier is never redirected, it stays with the physical
+/// keyboard, so the modifier byte of the report is always zero. Sending our own
+/// would mean holding a modifier Windows already believes is held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyboardReport {
-    modifiers: Modifiers,
     keys: [u8; MAX_PRESSED_KEYS],
 }
 
 impl KeyboardReport {
     pub const EMPTY: Self = Self {
-        modifiers: Modifiers::empty(),
         keys: [0; MAX_PRESSED_KEYS],
     };
 
-    /// Returns `false` when all six slots are taken - the HID equivalent of a
-    /// keyboard that cannot report one more simultaneous key.
+    /// Returns `false` when all six slots are taken.
     pub fn press(&mut self, usage: u8) -> bool {
-        // Zero is how an empty slot is spelled, so it can never be a key: the
-        // press is refused rather than filling the report with nothing.
+        // Zero is how an empty slot is spelled, so it can never be a key.
         if usage == 0 {
             return false;
         }
@@ -63,14 +63,12 @@ impl KeyboardReport {
         }
     }
 
-    /// Whether this key is currently one of the held slots.
+    /// Whether this key is one of the held slots.
     ///
-    /// The release path asks this rather than trusting a separate record of
-    /// what was pressed: only the report knows what the virtual keyboard is
-    /// really holding, and a key must be let go of there if, and only if, it is.
+    /// The release path asks this rather than trusting a separate record: only
+    /// the report knows what the virtual keyboard is really holding.
     #[must_use]
     pub fn holds(self, usage: u8) -> bool {
-        // Zero is an empty slot, not a key, exactly as `press` refuses it.
         usage != 0 && self.keys.contains(&usage)
     }
 
@@ -78,10 +76,10 @@ impl KeyboardReport {
         *self = Self::EMPTY;
     }
 
+    /// Byte 0 is the modifier bitmap and byte 1 is reserved; both stay zero.
     #[must_use]
     pub fn to_bytes(self) -> [u8; KEYBOARD_REPORT_LEN] {
         let mut bytes = [0u8; KEYBOARD_REPORT_LEN];
-        bytes[0] = self.modifiers.bits();
         bytes[2..].copy_from_slice(&self.keys);
         bytes
     }
@@ -101,8 +99,18 @@ mod tests {
         let mut report = KeyboardReport::EMPTY;
         assert!(report.press(0x04)); // "a"
 
-        // Byte 0 is the modifier bitmap, byte 1 is reserved, keys start at 2.
         assert_eq!(report.to_bytes(), [0x00, 0x00, 0x04, 0, 0, 0, 0, 0]);
+    }
+
+    /// The virtual keyboard must never claim a modifier of its own: the real
+    /// one is already holding it, and Windows would see it twice.
+    #[test]
+    fn no_report_ever_claims_a_modifier() {
+        let mut report = KeyboardReport::EMPTY;
+        for usage in [0x04, 0xE0, 0xE1, 0xE5] {
+            report.press(usage);
+            assert_eq!(report.to_bytes()[0], 0x00);
+        }
     }
 
     #[test]
@@ -156,7 +164,7 @@ mod tests {
         report.release(0x04);
         assert!(!report.holds(0x04));
 
-        // Zero is the empty slot, never a held key, however many slots are free.
+        // Zero is the empty slot, never a held key.
         assert!(!report.holds(0));
     }
 

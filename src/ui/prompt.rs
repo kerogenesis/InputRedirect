@@ -1,9 +1,10 @@
 //! Reading the menu keys.
 //!
 //! The console is read through the raw input records rather than through a
-//! character, because the character depends on the active keyboard layout: with
-//! a Russian layout the "q" key produces a completely different letter. The
-//! scan code describes the key itself, so the menu works in any layout.
+//! character: the character depends on the active keyboard layout, the scan
+//! code describes the key itself, so the menu works in any layout.
+
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Console::{
@@ -44,10 +45,6 @@ pub const TICK_MS: u32 = 500;
 const _: () = assert!(TICK_MS > 0 && TICK_MS <= 1000);
 
 /// Waits for a menu key, or gives up after `timeout_ms` and reports a tick.
-///
-/// Keys typed while the previous command was being carried out are dropped
-/// first: a key held down for a moment used to queue up repeats, and the menu
-/// then kept toggling itself working through them.
 pub fn wait_for_command(timeout_ms: u32) -> MenuKey {
     match next_key_down(timeout_ms) {
         KeyPress::None => MenuKey::Tick,
@@ -94,12 +91,10 @@ pub fn discard_pending_keys() {
 
 /// Holds a window open that is about to take its last message with it.
 ///
-/// Started the way the program is meant to be - from Explorer, as an
-/// administrator - it gets a console window of its own, and that window dies
-/// with the process: a line printed on the way out is gone before anyone can
-/// read it. Started from a shell that was already there, or from a script, the
-/// window outlives us and stopping to ask for a key would only be in the way,
-/// so this asks who else is using the console first.
+/// Started from Explorer the program gets a console window of its own, and that
+/// window dies with the process. Started from a shell that was already there,
+/// the window outlives us and stopping to ask for a key would only be in the
+/// way - so this asks who else is using the console first.
 pub fn wait_before_the_window_closes() {
     if !owns_the_window() {
         return;
@@ -112,8 +107,7 @@ pub fn wait_before_the_window_closes() {
 /// Whether this program is the only thing attached to the console.
 fn owns_the_window() -> bool {
     // Room for two: the answer only has to tell "just us" from "somebody else
-    // as well", and asking for the whole list would mean sizing a buffer for a
-    // number that cannot change the answer.
+    // as well".
     let mut attached = [0u32; 2];
 
     // SAFETY: the list is described by the length of the buffer it is given.
@@ -146,16 +140,30 @@ enum KeyPress {
 }
 
 /// Waits for one key to go down, ignoring everything else the console reports.
+///
+/// The deadline is worked out once. Waiting `timeout_ms` again after every
+/// record we have no use for would let a mouse moving over the window put the
+/// tick off for as long as it kept moving, and the counters would stop.
 fn next_key_down(timeout_ms: u32) -> KeyPress {
-    // SAFETY: the standard input handle is owned by the process, and the buffer
-    // is one record long, which is exactly what the call is told.
+    let deadline = (timeout_ms != INFINITE)
+        .then(|| Instant::now() + Duration::from_millis(u64::from(timeout_ms)));
+
+    // SAFETY: the standard input handle is owned by the process.
     unsafe {
         let Ok(input) = GetStdHandle(STD_INPUT_HANDLE) else {
             return KeyPress::Closed;
         };
 
         loop {
-            let wait = WaitForSingleObject(input, timeout_ms);
+            let left = match deadline {
+                None => INFINITE,
+                Some(deadline) => match deadline.checked_duration_since(Instant::now()) {
+                    None => return KeyPress::None,
+                    Some(left) => milliseconds_of(left),
+                },
+            };
+
+            let wait = WaitForSingleObject(input, left);
             if wait == WAIT_TIMEOUT {
                 return KeyPress::None;
             }
@@ -165,12 +173,19 @@ fn next_key_down(timeout_ms: u32) -> KeyPress {
 
             match read_key_down(input) {
                 Ok(Some(scan_code)) => return KeyPress::ScanCode(scan_code),
-                // A mouse move or a resize: wait again.
+                // A mouse move or a resize: wait out what is left.
                 Ok(None) => {}
                 Err(()) => return KeyPress::Closed,
             }
         }
     }
+}
+
+/// A wait in milliseconds, kept below the value that means "forever".
+fn milliseconds_of(left: Duration) -> u32 {
+    u32::try_from(left.as_millis())
+        .unwrap_or(u32::MAX)
+        .min(INFINITE - 1)
 }
 
 /// Reads the one event the console is holding.
@@ -225,5 +240,23 @@ mod tests {
         for scan_code in [0x1E, 0x39, 0x3B, 0x00] {
             assert_eq!(command_for(scan_code), None, "scan code {scan_code:#04X}");
         }
+    }
+
+    /// What is left of the tick is passed on as it is.
+    #[test]
+    fn the_time_left_is_asked_for_in_milliseconds() {
+        assert_eq!(milliseconds_of(Duration::from_millis(0)), 0);
+        assert_eq!(
+            milliseconds_of(Duration::from_millis(u64::from(TICK_MS))),
+            TICK_MS
+        );
+    }
+
+    /// A wait must never come out as INFINITE by accident: that is the one
+    /// value that means the tick never arrives.
+    #[test]
+    fn a_wait_longer_than_windows_can_count_is_not_mistaken_for_forever() {
+        assert!(milliseconds_of(Duration::from_secs(60 * 60 * 24 * 365)) < INFINITE);
+        assert!(milliseconds_of(Duration::MAX) < INFINITE);
     }
 }

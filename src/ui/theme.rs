@@ -53,7 +53,7 @@ pub const ERASE_BELOW: &str = "\x1b[0J";
 pub const BLANK: &str = "\r\n";
 
 pub const TITLE: &str = "InputRedirect";
-pub const SUBTITLE: &str = "Sends your typing and your clicks through the Logitech driver";
+pub const SUBTITLE: &str = "Sends your typing and your clicks through the real signed driver";
 
 const RULE_WIDTH: usize = 58;
 const LABEL_WIDTH: usize = 20;

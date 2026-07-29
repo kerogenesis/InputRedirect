@@ -1,14 +1,13 @@
 //! Remembering, across a reboot, that a reboot is still owed.
 //!
 //! Removing the driver leaves the .sys images loaded in the kernel until the
-//! machine restarts. A volatile registry value is nearly the whole answer: it
-//! survives the program exiting and disappears when Windows starts again.
+//! machine restarts. A volatile registry value survives the program exiting and
+//! disappears when Windows starts again.
 //!
-//! "Nearly", because the value is only volatile while the key that holds it is,
-//! and `REG_OPTION_VOLATILE` is honoured when the key is *created*. A key left
-//! behind by an older build - or created by anything else under the same name -
-//! would keep the flag forever, and the program would refuse to start for good.
-//! So the flag is also cleared explicitly, the moment the driver answers again.
+//! `REG_OPTION_VOLATILE` is honoured only when the key is *created*, so a key
+//! left behind by an older build would keep the flag forever and the program
+//! would refuse to start for good. The flag is therefore also cleared
+//! explicitly, the moment the driver answers again.
 
 use std::process::Command;
 
@@ -20,7 +19,7 @@ use windows::Win32::System::Registry::{
     REG_OPTION_VOLATILE, REG_SAM_FLAGS,
 };
 
-use super::wide;
+use super::{system32, wide};
 
 const KEY_PATH: &str = r"SOFTWARE\InputRedirect";
 const VALUE_NAME: &str = "RestartPending";
@@ -33,13 +32,9 @@ pub fn mark_restart_pending() {
 
     // SAFETY: the key is closed below; every pointer outlives the call.
     unsafe {
-        // Delete any existing key first, so the create below always makes a
-        // fresh one - and `REG_OPTION_VOLATILE` is honoured only for a key that
-        // is created. A persistent key left by an older build, or by anything
-        // else under this name, would otherwise keep the flag across the very
-        // restart meant to clear it and strand the program on the "please
-        // restart" screen for good. The key is ours and holds only this flag, so
-        // deleting it loses nothing, and a key that was not there is no error.
+        // Deleted first so the create below always makes a fresh - and
+        // therefore volatile - key. The key is ours and holds only this flag,
+        // and a key that was not there is no error.
         let _ = RegDeleteKeyExW(
             HKEY_LOCAL_MACHINE,
             PCWSTR(path.as_ptr()),
@@ -75,8 +70,7 @@ pub fn mark_restart_pending() {
 }
 
 /// Forgets the flag. Called when the driver is up and answering, which is the
-/// one situation in which a restart cannot still be owed - whether the machine
-/// was restarted or the driver was simply installed again.
+/// one situation in which a restart cannot still be owed.
 pub fn clear_restart_pending() {
     let path = wide(KEY_PATH);
     let name = wide(VALUE_NAME);
@@ -139,7 +133,7 @@ pub fn is_restart_pending() -> bool {
 
 /// Asks Windows to restart, giving the user a few seconds to read why.
 pub fn request_restart() -> bool {
-    Command::new("shutdown.exe")
+    Command::new(system32("shutdown.exe"))
         .args([
             "/r",
             "/t",

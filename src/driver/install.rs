@@ -15,15 +15,16 @@ use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiCallClassInstaller, SetupDiCreateDeviceInfoList, SetupDiCreateDeviceInfoW,
-    SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-    SetupDiGetDeviceInstanceIdW, SetupDiRemoveDevice, SetupDiSetDeviceRegistryPropertyW,
-    UpdateDriverForPlugAndPlayDevicesW, DICD_GENERATE_ID, DIF_REGISTERDEVICE, DIGCF_ALLCLASSES,
-    DIGCF_PRESENT, HDEVINFO, INSTALLFLAG_FORCE, SPDRP_HARDWAREID, SP_DEVINFO_DATA,
+    SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW, SetupDiRemoveDevice,
+    SetupDiSetDeviceRegistryPropertyW, UpdateDriverForPlugAndPlayDevicesW, DICD_GENERATE_ID,
+    DIF_REGISTERDEVICE, DIGCF_ALLCLASSES, DIGCF_PRESENT, INSTALLFLAG_FORCE, SPDRP_HARDWAREID,
+    SP_DEVINFO_DATA,
 };
 
 use crate::error::{Error, Result};
 
-use super::{holders, process, service, version, wide};
+use super::device::DeviceInfoSet;
+use super::{holders, process, service, system32, version, wide, wide_path};
 
 /// The device the bus driver binds to. It does not exist until we create it.
 const ROOT_HARDWARE_ID: &str = r"root\LGHUBVirtualBus";
@@ -33,27 +34,24 @@ const SYSTEM_DEVICE_CLASS: windows::core::GUID =
 const BUS_PACKAGE: &str = "logi_joy_bus_enum.inf";
 const HID_PACKAGE: &str = "logi_joy_vir_hid.inf";
 
-/// What the plug and play utility answers with when it has done the work but a
-/// restart is needed to finish it. The store is up to date either way; what is
-/// left over is the copy the kernel already has open. That is a success when
-/// nothing needs the new files right now - removing the driver, above all - and
-/// not when the whole point was to have the new build answering, which is why
-/// the answer is carried out of here rather than dropped.
+/// The plug and play utility, which is only ever the one in System32.
+const INSTALLER: &str = "pnputil.exe";
+
+/// What the plug and play utility answers when it has done the work but a
+/// restart is needed to finish it.
+///
+/// The store is up to date either way; what is left over is the copy the kernel
+/// already has open. That is a success when nothing needs the new files right
+/// now, and not when the whole point was to have the new build answering -
+/// which is why the answer is carried out of here rather than dropped.
 const RESTART_TO_FINISH: i32 = 3010;
 
-/// How long the plug and play utility is given to finish.
-///
-/// It normally answers in a second or two, and a minute is generous even on a
-/// slow machine with a large driver store. What this is really for is the case
-/// where it never answers at all: without a deadline the program hung on its way
-/// up, showing the step it had reached and nothing else, and the only way out
-/// was the task manager.
+/// How long the plug and play utility is given to finish. It normally answers
+/// in a second or two; the deadline is for the case where it never answers at
+/// all, which used to hang the program on its way up.
 const INSTALLER_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long the services are given to come up, and how often to look. Plug and
-/// play starts them in the background, so this is a wait for something to
-/// happen rather than a pause in the hope that it did: on a machine where it
-/// takes 200 ms, that is what it costs.
+/// How long the services are given to come up, and how often to look.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
 const STARTUP_POLL: Duration = Duration::from_millis(50);
 
@@ -105,15 +103,12 @@ fn add_packages(drivers: &Path) -> Result<Finished> {
 /// Makes sure the build now answering is the one this program speaks to.
 ///
 /// Windows says "done, after a restart" when it could not put a file in place
-/// because the kernel still has the old one open. The services are running
-/// either way, so nothing else notices - but they are running the old images,
-/// which answer the requests this program sends with the same invalid parameter
-/// they use for a device that is merely busy. Walking into that leaves the user
-/// with a failure that names nothing and repeats on every start.
+/// because the kernel still has the old one open. The services run either way,
+/// but on the old images, which answer our requests with the same invalid
+/// parameter they use for a device that is merely busy.
 ///
-/// Reading the version back is what tells the two apart: Windows often lands
-/// the new file at once and defers only the deletion of the old one, and then
-/// there is nothing to wait for.
+/// Reading the version back tells the two apart: Windows often lands the new
+/// file at once and defers only the deletion of the old one.
 fn is_the_build_we_speak_to(drivers: &Path, finished: Finished) -> Result<()> {
     if finished == Finished::Now {
         return Ok(());
@@ -131,17 +126,13 @@ fn is_the_build_we_speak_to(drivers: &Path, finished: Finished) -> Result<()> {
 
 /// Puts our build of the package in place of whichever one is installed.
 ///
-/// The store is emptied of both packages first and ours added afterwards. They
-/// carry the same file names whatever build they come from, so there is no way
-/// to remove one and keep the other, and a package left behind can be ranked
-/// above ours the next time plug and play looks for a driver for a device.
+/// Both packages are removed first and ours added afterwards: they carry the
+/// same file names whatever build they come from, and a package left behind can
+/// be ranked above ours the next time plug and play looks for a driver.
 ///
-/// A step that only finishes after a restart is not treated as done here, the
-/// way it is when the driver is being removed. Windows says that when it cannot
-/// touch a file the kernel still holds, and the images that go on answering are
-/// then the old ones - which is exactly the situation this function exists to
-/// get out of. Whether that really happened is read back from the files
-/// afterwards rather than assumed from the answer.
+/// Unlike a removal, a step that only finishes after a restart is not treated
+/// as done here - the old images would go on answering, which is the situation
+/// this function exists to get out of.
 pub fn replace(drivers: &Path) -> Result<()> {
     service::stop_all();
 
@@ -167,10 +158,8 @@ pub fn replace(drivers: &Path) -> Result<()> {
         finished = Finished::AfterRestart;
     }
 
-    // Both halves of the replacement can be put off to the next start, and
-    // either one leaves the old build answering. This is the one path where
-    // that matters enough to stop for: the whole reason to replace a driver
-    // that is already installed is that its protocol is not the one we speak.
+    // Either half of the replacement can be put off to the next start, and
+    // either one leaves the old build answering.
     is_the_build_we_speak_to(drivers, finished)
 }
 
@@ -196,12 +185,11 @@ pub fn bind_root_device(drivers: &Path) -> Result<()> {
         create_root_device()?;
     }
 
-    let inf = wide(&drivers.join(BUS_PACKAGE).display().to_string());
+    let inf = wide_path(&drivers.join(BUS_PACKAGE));
     let hardware_id = wide(ROOT_HARDWARE_ID);
 
     // SAFETY: both strings are null terminated and outlive the call. The
-    // reboot-required flag is optional and was never read, so it is not asked
-    // for.
+    // reboot-required flag is optional and was never read.
     unsafe {
         UpdateDriverForPlugAndPlayDevicesW(
             None,
@@ -223,42 +211,37 @@ fn create_root_device() -> Result<()> {
     let mut hardware_id = wide(ROOT_HARDWARE_ID);
     hardware_id.push(0); // the property is a list of strings
 
-    // SAFETY: the information list is destroyed on every path, and the
-    // property buffer is described with its real length in bytes.
+    // SAFETY: the property buffer is described with its real length in bytes,
+    // and the set is destroyed wherever this scope ends.
     unsafe {
-        let set = SetupDiCreateDeviceInfoList(Some(&SYSTEM_DEVICE_CLASS), None)
-            .map_err(|error| Error::Install(format!("device list: {error}")))?;
+        let set = DeviceInfoSet::new(
+            SetupDiCreateDeviceInfoList(Some(&SYSTEM_DEVICE_CLASS), None)
+                .map_err(|error| Error::Install(format!("device list: {error}")))?,
+        );
 
-        let result = (|| -> Result<()> {
-            let mut info = SP_DEVINFO_DATA {
-                cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
-                ..Default::default()
-            };
+        let mut info = SP_DEVINFO_DATA {
+            cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+            ..Default::default()
+        };
 
-            SetupDiCreateDeviceInfoW(
-                set,
-                PCWSTR(name.as_ptr()),
-                &SYSTEM_DEVICE_CLASS,
-                PCWSTR::null(),
-                None,
-                DICD_GENERATE_ID,
-                Some(&mut info),
-            )
-            .map_err(|error| Error::Install(format!("device node: {error}")))?;
+        SetupDiCreateDeviceInfoW(
+            set.handle(),
+            PCWSTR(name.as_ptr()),
+            &SYSTEM_DEVICE_CLASS,
+            PCWSTR::null(),
+            None,
+            DICD_GENERATE_ID,
+            Some(&mut info),
+        )
+        .map_err(|error| Error::Install(format!("device node: {error}")))?;
 
-            let bytes = std::slice::from_raw_parts(
-                hardware_id.as_ptr().cast::<u8>(),
-                hardware_id.len() * 2,
-            );
-            SetupDiSetDeviceRegistryPropertyW(set, &mut info, SPDRP_HARDWAREID, Some(bytes))
-                .map_err(|error| Error::Install(format!("hardware id: {error}")))?;
+        let bytes =
+            std::slice::from_raw_parts(hardware_id.as_ptr().cast::<u8>(), hardware_id.len() * 2);
+        SetupDiSetDeviceRegistryPropertyW(set.handle(), &mut info, SPDRP_HARDWAREID, Some(bytes))
+            .map_err(|error| Error::Install(format!("hardware id: {error}")))?;
 
-            SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set, Some(&info))
-                .map_err(|error| Error::Install(format!("device registration: {error}")))
-        })();
-
-        let _ = SetupDiDestroyDeviceInfoList(set);
-        result
+        SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set.handle(), Some(&info))
+            .map_err(|error| Error::Install(format!("device registration: {error}")))
     }
 }
 
@@ -271,16 +254,14 @@ enum Leftovers {
 
 /// How many child devices of a previous session are still on the bus.
 ///
-/// Waiting for this to reach zero is the difference between knowing the bus has
-/// finished taking a device away and hoping that it has: a device that is still
-/// there holds its product id, and the next device asked for with that id is
-/// turned down.
+/// A device that is still there holds its product id, and the next device asked
+/// for with that id is turned down.
 pub fn leftover_devices() -> i32 {
     visit_leftover_devices(Leftovers::Count)
 }
 
 /// Removes the child devices a previous session left behind, and reports how
-/// many were actually taken away - a device that refused to go is not counted.
+/// many were actually taken away.
 pub fn remove_leftover_devices() -> i32 {
     visit_leftover_devices(Leftovers::Remove)
 }
@@ -288,26 +269,27 @@ pub fn remove_leftover_devices() -> i32 {
 fn visit_leftover_devices(action: Leftovers) -> i32 {
     let mut found = 0;
 
-    // Counting asks only about devices that are really on the bus, because only
-    // those still hold a product id the next plug needs. Windows keeps the
-    // registry entry of a child long after the bus stops reporting it, and
-    // counting those ghosts too meant the wait for an empty bus could never
-    // succeed: every re-creation sat out its timeout and then rebuilt the bus.
+    // Counting asks only about devices really on the bus, because only those
+    // hold a product id. Windows keeps the registry entry of a child long after
+    // the bus stops reporting it, and counting those ghosts meant the wait for
+    // an empty bus could never succeed.
     //
-    // Removing deliberately asks about all of them, ghosts included - clearing
-    // out what earlier sessions left behind is the whole point of that pass.
+    // Removing deliberately asks about all of them, ghosts included.
     let scope = match action {
         Leftovers::Count => DIGCF_ALLCLASSES | DIGCF_PRESENT,
         Leftovers::Remove => DIGCF_ALLCLASSES,
     };
 
-    // SAFETY: the set is destroyed before returning and every device handed to
-    // SetupDiRemoveDevice came out of the same enumeration.
+    // Named rather than passed inline: the pointer must outlive the call.
+    let filter = wide("LGHUBDEVICE");
+
+    // SAFETY: every device handed to SetupDiRemoveDevice came out of the same
+    // enumeration, which outlives the loop.
     unsafe {
-        let Ok(set) = SetupDiGetClassDevsW(None, PCWSTR(wide("LGHUBDEVICE").as_ptr()), None, scope)
-        else {
+        let Ok(set) = SetupDiGetClassDevsW(None, PCWSTR(filter.as_ptr()), None, scope) else {
             return 0;
         };
+        let set = DeviceInfoSet::new(set);
 
         let mut index = 0;
         loop {
@@ -315,7 +297,7 @@ fn visit_leftover_devices(action: Leftovers) -> i32 {
                 cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
                 ..Default::default()
             };
-            if SetupDiEnumDeviceInfo(set, index, &mut info).is_err() {
+            if SetupDiEnumDeviceInfo(set.handle(), index, &mut info).is_err() {
                 break;
             }
             index += 1;
@@ -323,14 +305,12 @@ fn visit_leftover_devices(action: Leftovers) -> i32 {
             match action {
                 Leftovers::Count => found += 1,
                 Leftovers::Remove => {
-                    if SetupDiRemoveDevice(set, &mut info).as_bool() {
+                    if SetupDiRemoveDevice(set.handle(), &mut info).as_bool() {
                         found += 1;
                     }
                 }
             }
         }
-
-        let _ = SetupDiDestroyDeviceInfoList(set);
     }
 
     found
@@ -351,11 +331,8 @@ pub fn uninstall() -> Result<()> {
         let output = pnputil(["/delete-driver", &published_name, "/uninstall", "/force"])?;
 
         // A removal that only finishes after a restart still counts as done:
-        // the copy left behind is the one the kernel already has open, and that
-        // is exactly what removing a driver that is still loaded looks like. The
-        // same 3010 `replace` and `add_package` accept as success - treating it
-        // as a failure here reported every ordinary removal as broken and never
-        // set the restart-pending flag the removal flow is built around.
+        // the copy left behind is the one the kernel already has open, which is
+        // exactly what removing a loaded driver looks like.
         let code = output.status.code().unwrap_or(-1);
         if code != 0 && code != RESTART_TO_FINISH {
             return Err(Error::Uninstall(format!(
@@ -374,11 +351,8 @@ fn blamed() -> String {
     blame(&holders::of(&version::installed_binaries()))
 }
 
-/// The wording, kept apart from the asking so that it can be read at a glance
-/// and tested without a driver on the machine.
-///
-/// A failure with nobody to blame says nothing extra: a sentence ending in
-/// "held by" and then nothing would read like a bug of its own.
+/// The wording, kept apart from the asking so it can be tested without a driver
+/// on the machine.
 fn blame(holders: &[String]) -> String {
     if holders.is_empty() {
         String::new()
@@ -391,9 +365,7 @@ fn blame(holders: &[String]) -> String {
 ///
 /// The driver database is asked first: it is indexed by our own .inf file names
 /// and holds nothing that depends on the display language of Windows. The
-/// listing printed by the plug and play utility is only read when the database
-/// has nothing to say, so a machine that keeps it somewhere else still has a
-/// way to have the driver removed.
+/// printed listing is only read when the database has nothing to say.
 fn our_published_names() -> Result<Vec<String>> {
     let from_database: Vec<String> = [BUS_PACKAGE, HID_PACKAGE]
         .into_iter()
@@ -426,12 +398,11 @@ fn add_package(path: &Path) -> Result<Finished> {
 
 /// Runs the plug and play utility and waits for it, but not forever.
 ///
-/// The output is read on a thread of its own instead of after the wait. A pipe
-/// that fills up stops the program writing into it, so a wait that is not
-/// reading at the same time would be waiting for a process that is waiting for
-/// us - and neither would ever move again.
+/// The output is read on a thread of its own. A pipe that fills up stops the
+/// program writing into it, so a wait that is not reading at the same time
+/// would be waiting for a process that is waiting for us.
 fn pnputil<const N: usize>(arguments: [&str; N]) -> Result<Output> {
-    let child = Command::new("pnputil.exe")
+    let child = Command::new(system32(INSTALLER))
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -455,7 +426,9 @@ fn pnputil<const N: usize>(arguments: [&str; N]) -> Result<Output> {
         Err(_) => {
             // Nothing is owed to a utility that stopped answering, and leaving
             // it running would hold the driver store against the next attempt.
-            process::terminate(id);
+            // A minute has passed since it was started, so the id is only
+            // closed if it still names the utility we started.
+            process::terminate(id, |name| name.eq_ignore_ascii_case(INSTALLER));
 
             Err(Error::Install(format!(
                 "the system installer did not finish within {} seconds",
@@ -479,10 +452,9 @@ struct Package {
 }
 
 impl Package {
-    /// The file name is compared without regard to case: Windows file names are
-    /// case insensitive, the listing repeats whatever case the package was
-    /// added with, and mistaking our own package for someone else's would leave
-    /// the user unable to remove the driver at all.
+    /// Compared without regard to case: Windows file names are case
+    /// insensitive, and mistaking our own package for someone else's would
+    /// leave the user unable to remove the driver at all.
     fn is_ours(&self) -> bool {
         [BUS_PACKAGE, HID_PACKAGE]
             .into_iter()
@@ -494,16 +466,13 @@ impl Package {
 /// Parses the listing the plug and play utility prints. Records are separated
 /// by blank lines and every field is `label: value`.
 ///
-/// The labels are deliberately ignored. Windows translates them, so on a
-/// Russian or Ukrainian machine they are not the words this program could have
-/// been written against, and a parser that matched them would report an empty
-/// driver store and refuse to remove anything. What does not change is the
-/// order of the fields and the values themselves: `oem49.inf`, `Logitech` and
-/// the .inf file names read the same in every language.
+/// The labels are deliberately ignored: Windows translates them, and a parser
+/// that matched them would report an empty driver store on a Russian or
+/// Ukrainian machine. The order of the fields and the values read the same in
+/// every language.
 ///
 /// A record therefore starts at the first value that names an .inf file, which
-/// is what separates the records from the heading the utility prints above
-/// them - in whatever language it prints it.
+/// is what separates the records from the heading printed above them.
 fn parse_packages(listing: &str) -> Vec<Package> {
     let mut packages = Vec::new();
     let mut values: Vec<&str> = Vec::new();
@@ -535,8 +504,7 @@ fn parse_packages(listing: &str) -> Vec<Package> {
 }
 
 /// The first three values of a record are the published name, the original name
-/// and the provider, in that order. Everything after them describes the package
-/// rather than naming it, and a record with fewer than three is not one.
+/// and the provider, in that order. A record with fewer than three is not one.
 fn package_from(values: &[&str]) -> Option<Package> {
     let [published_name, original_name, provider, ..] = values else {
         return None;
@@ -553,7 +521,7 @@ fn find_devices(hardware_id: &str) -> Vec<String> {
     let mut found = Vec::new();
     let filter = wide(hardware_id);
 
-    // SAFETY: the set is destroyed before returning; the buffer is sized by us.
+    // SAFETY: the buffer is sized by us and the set outlives the loop.
     unsafe {
         let Ok(set) = SetupDiGetClassDevsW(
             Some(&SYSTEM_DEVICE_CLASS),
@@ -563,6 +531,7 @@ fn find_devices(hardware_id: &str) -> Vec<String> {
         ) else {
             return found;
         };
+        let set = DeviceInfoSet::new(set);
 
         let mut index = 0;
         loop {
@@ -570,20 +539,18 @@ fn find_devices(hardware_id: &str) -> Vec<String> {
                 cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
                 ..Default::default()
             };
-            if SetupDiEnumDeviceInfo(set, index, &mut info).is_err() {
+            if SetupDiEnumDeviceInfo(set.handle(), index, &mut info).is_err() {
                 break;
             }
             index += 1;
 
             let mut buffer = [0u16; 512];
-            if SetupDiGetDeviceInstanceIdW(set, &info, Some(&mut buffer), None).is_ok() {
+            if SetupDiGetDeviceInstanceIdW(set.handle(), &info, Some(&mut buffer), None).is_ok() {
                 if let Ok(id) = PCWSTR(buffer.as_ptr()).to_string() {
                     found.push(id);
                 }
             }
         }
-
-        let _ = SetupDiDestroyDeviceInfoList(HDEVINFO(set.0));
     }
 
     found
@@ -595,9 +562,7 @@ mod tests {
 
     const LISTING: &str = "Microsoft PnP Utility\n\nPublished Name:     oem49.inf\nOriginal Name:      logi_joy_bus_enum.inf\nProvider Name:      Logitech\nClass Name:         System devices\nDriver Version:     09/02/2022 2022.3.0.2\n\nPublished Name:     oem50.inf\nOriginal Name:      logi_joy_vir_hid.inf\nProvider Name:      Logitech\nClass Name:         HIDClass\n\nPublished Name:     oem12.inf\nOriginal Name:      nvidia_display.inf\nProvider Name:      NVIDIA\nClass Name:         Display\n";
 
-    /// The same three records with Russian labels and a Russian heading. The
-    /// exact wording does not matter to the parser - that is the point of the
-    /// test - but it is written the way Windows prints it.
+    /// The same three records with Russian labels and a Russian heading.
     const RUSSIAN_LISTING: &str = "\u{41f}\u{440}\u{43e}\u{433}\u{440}\u{430}\u{43c}\u{43c}\u{430} Microsoft PnP Utility\n\n\u{41e}\u{43f}\u{443}\u{431}\u{43b}\u{438}\u{43a}\u{43e}\u{432}\u{430}\u{43d}\u{43d}\u{43e}\u{435} \u{438}\u{43c}\u{44f}:     oem49.inf\n\u{418}\u{441}\u{445}\u{43e}\u{434}\u{43d}\u{43e}\u{435} \u{438}\u{43c}\u{44f}:            logi_joy_bus_enum.inf\n\u{418}\u{43c}\u{44f} \u{43f}\u{43e}\u{441}\u{442}\u{430}\u{432}\u{449}\u{438}\u{43a}\u{430}:        Logitech\n\u{418}\u{43c}\u{44f} \u{43a}\u{43b}\u{430}\u{441}\u{441}\u{430}:           \u{421}\u{438}\u{441}\u{442}\u{435}\u{43c}\u{43d}\u{44b}\u{435} \u{443}\u{441}\u{442}\u{440}\u{43e}\u{439}\u{441}\u{442}\u{432}\u{430}\n\u{412}\u{435}\u{440}\u{441}\u{438}\u{44f} \u{434}\u{440}\u{430}\u{439}\u{432}\u{435}\u{440}\u{430}:      02.09.2022 14:30:00\n\n\u{41e}\u{43f}\u{443}\u{431}\u{43b}\u{438}\u{43a}\u{43e}\u{432}\u{430}\u{43d}\u{43d}\u{43e}\u{435} \u{438}\u{43c}\u{44f}:     oem50.inf\n\u{418}\u{441}\u{445}\u{43e}\u{434}\u{43d}\u{43e}\u{435} \u{438}\u{43c}\u{44f}:            logi_joy_vir_hid.inf\n\u{418}\u{43c}\u{44f} \u{43f}\u{43e}\u{441}\u{442}\u{430}\u{432}\u{449}\u{438}\u{43a}\u{430}:        Logitech\n\n\u{41e}\u{43f}\u{443}\u{431}\u{43b}\u{438}\u{43a}\u{43e}\u{432}\u{430}\u{43d}\u{43d}\u{43e}\u{435} \u{438}\u{43c}\u{44f}:     oem12.inf\n\u{418}\u{441}\u{445}\u{43e}\u{434}\u{43d}\u{43e}\u{435} \u{438}\u{43c}\u{44f}:            nvidia_display.inf\n\u{418}\u{43c}\u{44f} \u{43f}\u{43e}\u{441}\u{442}\u{430}\u{432}\u{449}\u{438}\u{43a}\u{430}:        NVIDIA\n";
 
     /// The bus package on a Ukrainian machine.
@@ -647,8 +612,7 @@ mod tests {
 
     #[test]
     fn a_time_in_a_later_field_does_not_disturb_the_record_it_belongs_to() {
-        // A localised date field holds colons of its own. Only the first three
-        // values of a record are used, so it cannot reach the names.
+        // A localised date field holds colons of its own.
         let packages = parse_packages(RUSSIAN_LISTING);
 
         assert_eq!(packages[0].published_name, "oem49.inf");
@@ -713,16 +677,21 @@ mod tests {
         assert!(parse_packages("Microsoft PnP Utility\n\n").is_empty());
     }
 
-    /// Counting must not remove anything, which is the whole reason the two
-    /// share one enumeration: on a machine without the driver both answer zero,
-    /// and counting twice keeps answering the same.
+    /// Counting must not remove anything: on a machine without the driver both
+    /// answer zero, and counting twice keeps answering the same.
     #[test]
     fn counting_the_leftover_devices_leaves_them_where_they_are() {
         assert_eq!(leftover_devices(), leftover_devices());
     }
 
-    /// Windows did the work there and then, so there is nothing to check and
-    /// nothing to read off the disk.
+    /// Looking for a hardware id nothing answers to must end quietly and give
+    /// the set it opened back.
+    #[test]
+    fn a_hardware_id_nothing_answers_to_finds_no_devices() {
+        assert!(find_devices(r"root\NoSuchDeviceOfOurs").is_empty());
+    }
+
+    /// Windows did the work there and then, so there is nothing to read.
     #[test]
     fn an_installation_that_finished_now_is_not_waiting_on_a_restart() {
         let answer = is_the_build_we_speak_to(Path::new(r"Z:\no\such\folder"), Finished::Now);
@@ -732,8 +701,7 @@ mod tests {
 
     /// A deferred installation is only a reason to stop if the build that
     /// answers is still the wrong one. Where neither version can be read there
-    /// is no evidence of that, and sending someone to restart on a guess is
-    /// worse than carrying on.
+    /// is no evidence of that.
     #[test]
     fn a_deferred_installation_with_nothing_to_compare_carries_on() {
         let answer =
@@ -742,8 +710,7 @@ mod tests {
         assert!(answer.is_ok());
     }
 
-    /// The message names both builds, because "restart the computer" without a
-    /// reason is the kind of advice nobody acts on.
+    /// "Restart the computer" without a reason is advice nobody acts on.
     #[test]
     fn a_restart_that_is_really_owed_says_which_build_is_in_the_way() {
         let error = Error::RestartRequired(format!(
@@ -777,8 +744,8 @@ mod tests {
         );
     }
 
-    /// The whole message the user is left with has to read as one sentence,
-    /// because that is how it reaches them: a code, then who is in the way.
+    /// The whole message has to read as one sentence: a code, then who is in
+    /// the way.
     #[test]
     fn a_failure_with_its_blame_reads_as_one_sentence() {
         let holders = vec!["System (process 4)".to_owned()];
