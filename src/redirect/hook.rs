@@ -384,8 +384,8 @@ mod tests {
         assert!(REARM_INTERVAL_MS >= 30 * default_timeout_ms);
     }
 
-    /// The failure path hands take_down whatever the two calls produced, and a
-    /// hook that was never installed must not be removed.
+    /// The failure path hands `take_down` whatever the two calls produced, and
+    /// a hook that was never installed must not be removed.
     #[test]
     fn taking_down_hooks_that_were_never_installed_does_nothing() {
         take_down([None]);
