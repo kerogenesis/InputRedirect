@@ -149,10 +149,12 @@ fn run(ready: &Sender<Option<u32>>) {
     // SAFETY: the hooks are installed and removed on this thread, and the
     // message loop between the two calls is what keeps them alive.
     unsafe {
-        let keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), None, 0);
-        let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), None, 0);
+        // Only whether a hook exists matters from here on, and a handle is
+        // Copy where a Result is not.
+        let keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), None, 0).ok();
+        let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), None, 0).ok();
 
-        let (Ok(mut keyboard), Ok(mut mouse)) = (keyboard, mouse) else {
+        let (Some(mut keyboard), Some(mut mouse)) = (keyboard, mouse) else {
             // Whichever one Windows did accept has to come back down here.
             // This thread is about to end, and Windows goes on calling a hook
             // whose owner is gone until it times out - with the only handle
@@ -193,7 +195,7 @@ fn run(ready: &Sender<Option<u32>>) {
             let _ = KillTimer(None, timer);
         }
 
-        take_down([Ok(keyboard), Ok(mouse)]);
+        take_down([Some(keyboard), Some(mouse)]);
     }
 }
 
@@ -210,14 +212,14 @@ fn rearm(kind: WINDOWS_HOOK_ID, current: &mut HHOOK, callback: HOOKPROC) {
         return;
     };
 
-    take_down([Ok(std::mem::replace(current, fresh))]);
+    take_down([Some(std::mem::replace(current, fresh))]);
 }
 
 /// Removes the hooks that were installed, ignoring the ones that were not.
 ///
 /// Must run on the thread that installed them, which is the only one allowed
 /// to remove them.
-fn take_down<const N: usize>(hooks: [windows::core::Result<HHOOK>; N]) {
+fn take_down<const N: usize>(hooks: [Option<HHOOK>; N]) {
     for hook in hooks.into_iter().flatten() {
         // SAFETY: each handle came from SetWindowsHookExW on this thread and is
         // removed exactly once.
@@ -382,11 +384,11 @@ mod tests {
         assert!(REARM_INTERVAL_MS >= 30 * default_timeout_ms);
     }
 
-    /// The failure path hands take_down whatever the two calls returned, and a
+    /// The failure path hands take_down whatever the two calls produced, and a
     /// hook that was never installed must not be removed.
     #[test]
     fn taking_down_hooks_that_were_never_installed_does_nothing() {
-        take_down([Err(windows::core::Error::from_win32())]);
+        take_down([None]);
         take_down::<0>([]);
     }
 }
