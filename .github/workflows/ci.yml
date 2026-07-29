@@ -1,4 +1,4 @@
-name: Build and release
+name: CI
 
 on:
   push:
@@ -17,11 +17,6 @@ env:
 jobs:
   build:
     runs-on: windows-latest
-
-    # Publishing a release means writing a tag and a release to this
-    # repository. A new repository hands out a read-only token by default.
-    permissions:
-      contents: write
 
     steps:
       - name: Check out the repository
@@ -109,29 +104,11 @@ jobs:
 
           Write-Host 'No reference to the Visual C++ runtime, the CRT is linked in.'
 
+      # A run artifact is enough for looking at a build of a branch or a pull
+      # request. Anything meant to be downloaded by name comes from a tag.
       - name: Upload the build artifact
         uses: actions/upload-artifact@v4
         with:
           name: InputRedirect
           path: dist/InputRedirect.exe
           if-no-files-found: error
-
-      - name: Publish the rolling release
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          # Remove the previous release together with its tag, so nothing is
-          # left pointing at an older commit. Missing is fine on a first run.
-          gh release delete latest --yes --cleanup-tag || true
-
-          # --target creates the tag on the commit just built, which keeps one
-          # command in charge of where "latest" points.
-          gh release create latest dist/InputRedirect.exe \
-            --target "$GITHUB_SHA" \
-            --title "Latest build" \
-            --notes "Automated build from commit $GITHUB_SHA." \
-            --latest

@@ -1,0 +1,146 @@
+name: Release
+
+# A release is cut from a tag, never from whatever landed on main last. The tag
+# names the version, decides which commit is published, and stays valid.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+# Two pushes of the same tag must not race to create the same release, and a
+# publish that is already under way is not worth cancelling.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+# See ci.yml for why RUSTFLAGS is not set here.
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    # Creating a release and uploading its assets needs more than the read-only
+    # token a workflow is given by default.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+
+      - name: Read the version from the tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $version = $tag -replace '^v', ''
+
+          # A tag that disagrees with Cargo.toml would publish an archive whose
+          # name and whose executable claim different versions.
+          $declared = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($declared -ne $version) {
+            throw "the tag says $version but Cargo.toml says $declared"
+          }
+
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Record the toolchain version
+        id: toolchain
+        shell: bash
+        run: echo "version=$(rustc --version | tr ' ()' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-${{ runner.os }}-${{ steps.toolchain.outputs.version }}-
+
+      # The checks repeated here are the ones that decide whether the artifact
+      # is fit to publish. Formatting and lints are CI's job: they say nothing
+      # about the bytes that ship.
+      - name: Verify the signed driver files
+        shell: pwsh
+        run: |
+          Get-ChildItem drivers -Filter *.cat | ForEach-Object {
+            $signature = Get-AuthenticodeSignature $_.FullName
+            Write-Host "$($_.Name): $($signature.Status) - $($signature.SignerCertificate.Subject)"
+            if ($signature.Status -ne 'Valid') {
+              throw "$($_.Name) is not validly signed: $($signature.Status)"
+            }
+          }
+
+      - name: Test
+        run: cargo test --locked --all-targets
+
+      - name: Build
+        run: cargo build --locked --release
+
+      - name: Check that the binary is statically linked
+        shell: pwsh
+        run: |
+          $exe = 'target/x86_64-pc-windows-msvc/release/InputRedirect.exe'
+          $bytes = [System.IO.File]::ReadAllBytes("$PWD/$exe")
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+
+          $dynamic = @('VCRUNTIME140', 'MSVCP140', 'api-ms-win-crt') |
+            Where-Object { $text.Contains($_) }
+
+          if ($dynamic) {
+            throw "the binary references $($dynamic -join ', '), so crt-static was not applied"
+          }
+
+          Write-Host 'No reference to the Visual C++ runtime, the CRT is linked in.'
+
+      - name: Pack the archive
+        id: package
+        shell: pwsh
+        run: |
+          $name = 'InputRedirect-${{ steps.version.outputs.version }}-x86_64-windows'
+
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/InputRedirect.exe "dist/$name/"
+          Copy-Item LICENSE "dist/$name/"
+
+          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
+
+          # A published hash is how someone checks that what they downloaded is
+          # what this run built.
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "dist/$name.zip.sha256" -Value "$hash  $name.zip"
+
+          Get-Item "dist/$name.zip" | Format-List Name, Length
+
+          "archive=dist/$name.zip" >> $env:GITHUB_OUTPUT
+          "checksum=dist/$name.zip.sha256" >> $env:GITHUB_OUTPUT
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+
+          # --generate-notes writes up the commits and pull requests since the
+          # previous tag, which is what makes the releases page worth reading.
+          # --verify-tag refuses to invent a tag if the push was somehow lost.
+          $arguments = @(
+            'release', 'create', '${{ steps.version.outputs.tag }}',
+            '${{ steps.package.outputs.archive }}',
+            '${{ steps.package.outputs.checksum }}',
+            '--title', "InputRedirect $version",
+            '--generate-notes',
+            '--verify-tag'
+          )
+
+          # A tag like v0.2.0-rc1 is not something to hand people by default.
+          if ($version -match '-') { $arguments += '--prerelease' }
+
+          gh @arguments
