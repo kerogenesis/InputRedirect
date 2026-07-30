@@ -65,15 +65,37 @@ jobs:
 
       # The checks repeated here are the ones that decide whether the artifact
       # is fit to publish. Formatting and lints are CI's job: they say nothing
-      # about the bytes that ship.
+      # about the bytes that ship. This one is kept in step with ci.yml.
       - name: Verify the signed driver files
         shell: pwsh
         run: |
-          Get-ChildItem drivers -Filter *.cat | ForEach-Object {
-            $signature = Get-AuthenticodeSignature $_.FullName
-            Write-Host "$($_.Name): $($signature.Status) - $($signature.SignerCertificate.Subject)"
+          $expected = @(
+            'logi_joy_bus_enum.cat',
+            'logi_joy_bus_enum.inf',
+            'logi_joy_bus_enum.sys',
+            'logi_joy_vir_hid.cat',
+            'logi_joy_vir_hid.inf',
+            'logi_joy_vir_hid.sys',
+            'logi_joy_xlcore.sys'
+          )
+          $present = @(Get-ChildItem drivers -File | ForEach-Object { $_.Name } | Sort-Object)
+
+          $difference = Compare-Object $expected $present
+          if ($difference) {
+            $names = ($difference | ForEach-Object { $_.InputObject }) -join ', '
+            throw "drivers/ is not the expected package, it differs in: $names"
+          }
+
+          foreach ($catalog in Get-ChildItem drivers -Filter *.cat) {
+            $signature = Get-AuthenticodeSignature $catalog.FullName
+            $subject = $signature.SignerCertificate.Subject
+            Write-Host "$($catalog.Name): $($signature.Status) - $subject"
+
             if ($signature.Status -ne 'Valid') {
-              throw "$($_.Name) is not validly signed: $($signature.Status)"
+              throw "$($catalog.Name) is not validly signed: $($signature.Status)"
+            }
+            if ($subject -notmatch 'Logitech') {
+              throw "$($catalog.Name) is signed by $subject, not by Logitech"
             }
           }
 
