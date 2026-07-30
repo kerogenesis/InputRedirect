@@ -770,7 +770,7 @@ mod tests {
     /// When the bus is already empty the function must not sit out the timeout:
     /// the promptness check only applies to that case. When there are leftover
     /// devices (driver installed in another window) the function correctly waits
-    /// out REMOVAL_TIMEOUT, and no timing assertion makes sense.
+    /// out `REMOVAL_TIMEOUT`, and no timing assertion makes sense.
     #[test]
     fn an_empty_bus_is_noticed_without_waiting() {
         let started = Instant::now();
