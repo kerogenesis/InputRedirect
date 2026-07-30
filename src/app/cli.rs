@@ -27,9 +27,8 @@ Options:
     -k, --keyboard    redirect the keyboard
     -h, --help        show this help and exit
 
-With no options the interactive menu opens. Given --mouse, --keyboard, or both,
-those redirects switch on with no menu - one line says what is running. Closing
-the window or pressing Ctrl+C switches everything back and ends the program.";
+With no options the interactive menu opens. Closing the window or pressing
+Ctrl+C switches everything back and ends the program.";
 
 /// What the command line asked the program to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
