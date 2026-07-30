@@ -123,7 +123,7 @@ fn command_for(scan_code: u16) -> Option<Command> {
         0x03 | 0x50 => Command::ToggleKeyboard,  // 2
         0x04 | 0x51 => Command::StopEverything,  // 3
         0x05 | 0x4B => Command::RecreateDevices, // 4
-        0x20 => Command::RemoveDriver,           // d
+        0x13 => Command::RemoveDriver,           // r
         0x10 | 0x01 => Command::Quit,            // q, escape
         _ => return None,
     };
@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(command_for(0x03), Some(Command::ToggleKeyboard));
         assert_eq!(command_for(0x04), Some(Command::StopEverything));
         assert_eq!(command_for(0x05), Some(Command::RecreateDevices));
-        assert_eq!(command_for(0x20), Some(Command::RemoveDriver));
+        assert_eq!(command_for(0x13), Some(Command::RemoveDriver));
         assert_eq!(command_for(0x10), Some(Command::Quit));
     }
 

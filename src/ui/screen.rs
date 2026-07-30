@@ -209,7 +209,7 @@ fn menu(dashboard: Dashboard) -> String {
     ));
     text.push_str(&theme::action('3', "stop everything"));
     text.push_str(&theme::action('4', "re-create virtual devices"));
-    text.push_str(&theme::action('D', "remove driver"));
+    text.push_str(&theme::action('R', "remove driver"));
     text.push_str(&theme::action('Q', "quit"));
 
     text.push_str(theme::BLANK);
@@ -275,7 +275,7 @@ mod tests {
             ("[2]", "redirect keyboard"),
             ("[3]", "stop everything"),
             ("[4]", "re-create virtual devices"),
-            ("[D]", "remove driver"),
+            ("[R]", "remove driver"),
             ("[Q]", "quit"),
         ] {
             assert!(line_with(&frame, key).contains(label), "{key}");
