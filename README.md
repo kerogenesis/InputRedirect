@@ -13,6 +13,8 @@ from a real Logitech device.
 One executable, nothing to install: the signed driver files are embedded in it
 and deployed on first start.
 
+This is really useful when anti-cheat software decides to block your laptop's touchpad for some reason lol.
+
 ## Requirements
 
 - Windows 10 or 11

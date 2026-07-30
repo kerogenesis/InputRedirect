@@ -74,10 +74,7 @@ impl App {
         // no-op before preparing the console or calling start. A pending
         // restart is different: removal already happened and still has to be
         // finished, so the existing restart screen below takes precedence.
-        if request == cli::Request::RemoveDriver
-            && !restart_pending
-            && !driver_is_installed()
-        {
+        if request == cli::Request::RemoveDriver && !restart_pending && !driver_is_installed() {
             println!("InputRedirect: no driver is installed, so there is nothing to remove.");
             return Ok(Outcome::Finished);
         }
