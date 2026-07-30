@@ -15,14 +15,7 @@
 //! what makes it testable: there is no translated text left in the path, so an
 //! English machine exercises exactly what a Russian one would.
 
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::ERROR_SUCCESS;
-use windows::Win32::System::Registry::{
-    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,
-    KEY_WOW64_64KEY, REG_SAM_FLAGS,
-};
-
-use super::wide;
+use windows_registry::LOCAL_MACHINE;
 
 /// The driver database's index of published .inf files.
 const DRIVER_INF_FILES: &str = r"SYSTEM\DriverDatabase\DriverInfFiles";
@@ -39,15 +32,26 @@ const ACTIVE: &str = "Active";
 /// here that there is nothing to remove.
 #[must_use]
 pub fn published_names(package: &str) -> Vec<String> {
-    let Some(key) = Key::open(&format!(r"{DRIVER_INF_FILES}\{package}")) else {
+    let path = format!(r"{DRIVER_INF_FILES}\{package}");
+
+    let Ok(key) = LOCAL_MACHINE.options().read().open(&path) else {
         return Vec::new();
     };
 
     // The unnamed value lists every published copy as a `REG_MULTI_SZ`, and
     // `Active` names the one in use. Both are read and folded together, so a
     // machine that carries only one of them is still understood.
-    let mut names = key.strings("");
-    names.extend(key.strings(ACTIVE));
+    //
+    // `REG_MULTI_SZ` and `REG_SZ` share the same encoding: UTF-16 strings
+    // separated by null terminators. Reading the raw bytes and splitting on
+    // nulls covers both without consulting the type field.
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(bytes) = key.get_bytes("") {
+        names.extend(strings_from_utf16_bytes(&bytes));
+    }
+    if let Ok(bytes) = key.get_bytes(ACTIVE) {
+        names.extend(strings_from_utf16_bytes(&bytes));
+    }
 
     names.retain(|name| !name.is_empty());
     names.sort_unstable();
@@ -56,108 +60,26 @@ pub fn published_names(package: &str) -> Vec<String> {
     names
 }
 
-/// A registry key that closes itself.
-struct Key(HKEY);
-
-impl Key {
-    /// Opens a key under `HKEY_LOCAL_MACHINE` for reading, or gives up quietly.
-    ///
-    /// The 64-bit view is asked for explicitly: the driver database lives there
-    /// and nowhere else, and a 32-bit build reading its own redirected view
-    /// would find an empty key rather than an error.
-    fn open(path: &str) -> Option<Self> {
-        let path = wide(path);
-        let mut key = HKEY::default();
-
-        // SAFETY: the path is null terminated and outlives the call, and the
-        // handle Windows writes back is closed by `Drop`.
-        let opened = unsafe {
-            RegOpenKeyExW(
-                HKEY_LOCAL_MACHINE,
-                PCWSTR(path.as_ptr()),
-                None,
-                REG_SAM_FLAGS(KEY_READ.0 | KEY_WOW64_64KEY.0),
-                &mut key,
-            )
-        };
-
-        (opened == ERROR_SUCCESS).then_some(Self(key))
+/// Splits raw UTF-16 LE registry bytes into strings.
+///
+/// Both `REG_SZ` and `REG_MULTI_SZ` are sequences of null-terminated UTF-16
+/// strings: splitting on `0u16` covers both. A byte count that is not even
+/// cannot be a valid UTF-16 sequence and is returned as empty.
+fn strings_from_utf16_bytes(bytes: &[u8]) -> Vec<String> {
+    if bytes.len() % 2 != 0 {
+        return Vec::new();
     }
 
-    /// Reads a value that holds text, whether it is one string or several.
-    ///
-    /// A `REG_SZ` and a `REG_MULTI_SZ` are both UTF-16 with a null after every
-    /// string, so splitting on the nulls covers both and there is no reason to
-    /// ask which one it is. An empty `name` means the unnamed value.
-    fn strings(&self, name: &str) -> Vec<String> {
-        let Some(units) = self.value(name) else {
-            return Vec::new();
-        };
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
 
-        units
-            .split(|unit| *unit == 0)
-            .filter(|string| !string.is_empty())
-            .map(String::from_utf16_lossy)
-            .collect()
-    }
-
-    /// Reads a value as the UTF-16 units it is stored as.
-    ///
-    /// The size is asked for first rather than guessed: the list of published
-    /// names grows with every copy of the package Windows has kept.
-    fn value(&self, name: &str) -> Option<Vec<u16>> {
-        let name = wide(name);
-        let mut size = 0u32;
-
-        // SAFETY: passing no buffer is how the call is asked for the size
-        // alone; the name is null terminated and outlives both calls.
-        let measured = unsafe {
-            RegQueryValueExW(
-                self.0,
-                PCWSTR(name.as_ptr()),
-                None,
-                None,
-                None,
-                Some(&mut size),
-            )
-        };
-        if measured != ERROR_SUCCESS || size == 0 {
-            return None;
-        }
-
-        // One unit of slack: a value written without its final null is still
-        // read as text rather than running off the end of the buffer.
-        let mut units = vec![0u16; size as usize / 2 + 1];
-        let mut size = (units.len() * 2) as u32;
-
-        // SAFETY: the buffer is described by its real size in bytes, and it is
-        // at least as large as the size measured above.
-        let read = unsafe {
-            RegQueryValueExW(
-                self.0,
-                PCWSTR(name.as_ptr()),
-                None,
-                None,
-                Some(units.as_mut_ptr().cast()),
-                Some(&mut size),
-            )
-        };
-        if read != ERROR_SUCCESS {
-            return None;
-        }
-
-        units.truncate(size as usize / 2);
-        Some(units)
-    }
-}
-
-impl Drop for Key {
-    fn drop(&mut self) {
-        // SAFETY: the handle came from `RegOpenKeyExW` above and is closed once.
-        unsafe {
-            let _ = RegCloseKey(self.0);
-        }
-    }
+    units
+        .split(|&unit| unit == 0)
+        .filter(|string| !string.is_empty())
+        .map(String::from_utf16_lossy)
+        .collect()
 }
 
 #[cfg(test)]
@@ -180,5 +102,44 @@ mod tests {
         for package in ["", "..", r"..\..\SYSTEM", "logi_joy_bus_enum"] {
             assert!(published_names(package).is_empty(), "{package:?}");
         }
+    }
+
+    #[test]
+    fn a_single_string_is_returned_as_one_item() {
+        let bytes: Vec<u8> = "oem49.inf"
+            .encode_utf16()
+            .chain(std::iter::once(0u16))
+            .flat_map(|unit| unit.to_le_bytes())
+            .collect();
+
+        assert_eq!(strings_from_utf16_bytes(&bytes), ["oem49.inf"]);
+    }
+
+    #[test]
+    fn two_strings_separated_by_a_null_are_both_returned() {
+        let units: Vec<u16> = "oem49.inf"
+            .encode_utf16()
+            .chain([0, /* second string */ ])
+            .chain("oem50.inf".encode_utf16())
+            .chain([0])
+            .collect();
+        let bytes: Vec<u8> = units
+            .iter()
+            .flat_map(|unit| unit.to_le_bytes())
+            .collect();
+
+        let mut names = strings_from_utf16_bytes(&bytes);
+        names.sort_unstable();
+        assert_eq!(names, ["oem49.inf", "oem50.inf"]);
+    }
+
+    #[test]
+    fn an_odd_byte_count_yields_nothing() {
+        assert!(strings_from_utf16_bytes(&[0x41]).is_empty());
+    }
+
+    #[test]
+    fn an_empty_slice_yields_nothing() {
+        assert!(strings_from_utf16_bytes(&[]).is_empty());
     }
 }
