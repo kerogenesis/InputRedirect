@@ -71,9 +71,12 @@ pub struct Devices {
 }
 
 // SAFETY: the handle is an opaque kernel handle rather than a pointer into this
-// process, and the driver serialises the requests it receives. The hook thread
-// and the interface thread may therefore share one connection.
+// process, so nothing in this type is tied to the thread that opened it.
 unsafe impl Send for Devices {}
+
+// SAFETY: the driver serialises the requests it receives, and every method here
+// takes the connection by shared reference and mutates nothing behind it. The
+// hook thread and the interface thread may therefore share one connection.
 unsafe impl Sync for Devices {}
 
 impl Devices {
