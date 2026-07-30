@@ -43,8 +43,10 @@ impl App {
     /// Brings the driver up and then serves the menu until the user leaves.
     ///
     /// `--help` / `-h` prints the list of flags and exits before anything is
-    /// claimed. `--mouse` / `-m` or `--keyboard` / `-k` switch those redirects
-    /// on and wait without a menu instead; see `run_headless`.
+    /// claimed. `--remove-driver` / `-r` brings the driver up only to take it
+    /// straight back out, the same flow the menu's `R` runs. `--mouse` / `-m`
+    /// or `--keyboard` / `-k` switch those redirects on and wait without a
+    /// menu instead; see `run_headless`.
     pub fn run(mut self) -> Result<Outcome> {
         // Read before anything is claimed or installed, so a misspelt flag
         // fails on the spot and `--help` answers without a driver.
@@ -81,6 +83,13 @@ impl App {
 
         self.start()?;
 
+        // Asked to remove the driver from the command line: run the very flow
+        // the menu's R does - it confirms, removes, and offers the restart -
+        // then ends, rather than dropping into the menu afterwards.
+        if request == cli::Request::RemoveDriver {
+            return Ok(self.remove_driver().unwrap_or(Outcome::Finished));
+        }
+
         // The command line, not the menu, is driving: switch on what it asked
         // for and wait it out.
         if let cli::Request::Redirect(requested) = request {
@@ -96,7 +105,7 @@ impl App {
                 MenuKey::Tick => {}
                 MenuKey::Unknown => self
                     .screen
-                    .say(Tone::Warning, "Unknown key. Use 1, 2, 3, 4, D or Q."),
+                    .say(Tone::Warning, "Unknown key. Use 1, 2, 3, 4, R or Q."),
                 MenuKey::Chosen(command) => {
                     if let Some(outcome) = self.carry_out(command) {
                         return Ok(outcome);

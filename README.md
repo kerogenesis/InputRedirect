@@ -28,14 +28,37 @@ Run `InputRedirect.exe` as administrator and choose an option:
 | `2` | Redirect keyboard |
 | `3` | Stop everything |
 | `4` | Re-create the virtual devices |
-| `D` | Remove the driver |
+| `R` | Remove the driver |
 | `Q` | Quit |
 
 `1` and `2` are switches - press again to turn them off. Closing the window turns the
 redirect off.
 
-After `D` the machine has to restart before the driver is fully gone; the tool
+After `R` the machine has to restart before the driver is fully gone; the tool
 offers it and reminds you on the next start if you skipped it.
+
+## Command line
+
+You do not have to open the menu. Started from a terminal, InputRedirect can
+switch a redirect on straight away - handy for shortcuts, scheduled tasks and
+scripts:
+
+```
+Usage:
+    InputRedirect [options]
+
+Options:
+    -m, --mouse            redirect the mouse buttons
+    -k, --keyboard         redirect the keyboard
+    -r, --remove-driver    remove the driver
+    -h, --help             show this help
+```
+
+With `--mouse`, `--keyboard`, or both (short `-m` / `-k`), the tool starts as
+usual, switches on what you asked for and prints one line saying what is
+running - no menu. Closing the window or pressing Ctrl+C switches everything
+back, exactly as the menu does. `--remove-driver` (short `-r`) runs the same
+removal as the `R` key.
 
 ## Building
 

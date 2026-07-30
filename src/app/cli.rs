@@ -4,13 +4,15 @@
 //! `--mouse` / `-m`, `--keyboard` / `-k`, or both, it switches those redirects
 //! on at once and stays out of the way: no menu is drawn, one green line says
 //! what is running, and closing the window or pressing Ctrl+C switches
-//! everything back, exactly as the menu does. `--help` / `-h` lists the flags
-//! and exits.
+//! everything back, exactly as the menu does. `--remove-driver` / `-r` takes
+//! the driver back out - the same flow the menu's `R` runs - and `--help` /
+//! `-h` lists the flags and exits.
 
 use crate::error::{Error, Result};
 
 const MOUSE_FLAGS: [&str; 2] = ["--mouse", "-m"];
 const KEYBOARD_FLAGS: [&str; 2] = ["--keyboard", "-k"];
+const REMOVE_FLAGS: [&str; 2] = ["--remove-driver", "-r"];
 const HELP_FLAGS: [&str; 2] = ["--help", "-h"];
 
 /// The usage text `--help` prints. It is shown before the console is prepared
@@ -23,9 +25,10 @@ Usage:
     InputRedirect [options]
 
 Options:
-    -m, --mouse       redirect the mouse buttons
-    -k, --keyboard    redirect the keyboard
-    -h, --help        show this help
+    -m, --mouse            redirect the mouse buttons
+    -k, --keyboard         redirect the keyboard
+    -r, --remove-driver    remove the driver
+    -h, --help             show this help
 
 With no options the interactive menu opens. Closing the window or pressing
 Ctrl+C switches everything back and ends the program.";
@@ -33,10 +36,12 @@ Ctrl+C switches everything back and ends the program.";
 /// What the command line asked the program to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
-    /// No redirect flags were given: open the interactive menu.
+    /// No flags were given: open the interactive menu.
     Menu,
     /// Switch on exactly these redirects and skip the menu.
     Redirect(Requested),
+    /// Take the driver back out of Windows, then end.
+    RemoveDriver,
     /// Print the usage text and leave, without touching anything else.
     Help,
 }
@@ -68,19 +73,25 @@ impl Requested {
 ///
 /// An unrecognised argument is refused rather than ignored: a misspelt
 /// `--mouse` that quietly opened the menu instead would look like the flag
-/// does nothing. `--help` wins over any redirect alongside it, since someone
-/// asking to read the flags did not mean to start one.
+/// does nothing. When more than one thing is asked for, the request that does
+/// the least damage if the rest were a mistake wins: `--help` only prints, so
+/// it comes first, and `--remove-driver` ends the program, so it comes before
+/// the redirects it would otherwise switch on only to tear straight down.
 pub fn parse<I>(arguments: I) -> Result<Request>
 where
     I: IntoIterator<Item = String>,
 {
     let mut requested = Requested::default();
+    let mut help = false;
+    let mut remove = false;
 
     for argument in arguments {
         let argument = argument.as_str();
 
         if HELP_FLAGS.contains(&argument) {
-            return Ok(Request::Help);
+            help = true;
+        } else if REMOVE_FLAGS.contains(&argument) {
+            remove = true;
         } else if MOUSE_FLAGS.contains(&argument) {
             requested.mouse = true;
         } else if KEYBOARD_FLAGS.contains(&argument) {
@@ -90,7 +101,11 @@ where
         }
     }
 
-    if requested.mouse || requested.keyboard {
+    if help {
+        Ok(Request::Help)
+    } else if remove {
+        Ok(Request::RemoveDriver)
+    } else if requested.mouse || requested.keyboard {
         Ok(Request::Redirect(requested))
     } else {
         Ok(Request::Menu)
@@ -178,12 +193,37 @@ mod tests {
     }
 
     #[test]
+    fn either_spelling_of_remove_asks_to_remove_the_driver() {
+        let long = parse_args(&["--remove-driver"]).unwrap();
+        let short = parse_args(&["-r"]).unwrap();
+
+        assert_eq!(long, Request::RemoveDriver);
+        assert_eq!(short, Request::RemoveDriver);
+    }
+
+    #[test]
     fn help_wins_over_a_redirect_alongside_it() {
         let after_mouse = parse_args(&["--mouse", "--help"]).unwrap();
         let before_keyboard = parse_args(&["-h", "--keyboard"]).unwrap();
 
         assert_eq!(after_mouse, Request::Help);
         assert_eq!(before_keyboard, Request::Help);
+    }
+
+    #[test]
+    fn remove_wins_over_a_redirect_alongside_it() {
+        let with_mouse = parse_args(&["--mouse", "-r"]).unwrap();
+        let with_keyboard = parse_args(&["-r", "--keyboard"]).unwrap();
+
+        assert_eq!(with_mouse, Request::RemoveDriver);
+        assert_eq!(with_keyboard, Request::RemoveDriver);
+    }
+
+    #[test]
+    fn help_wins_over_removing_the_driver_too() {
+        let request = parse_args(&["--remove-driver", "--help"]).unwrap();
+
+        assert_eq!(request, Request::Help);
     }
 
     #[test]
