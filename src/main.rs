@@ -18,6 +18,7 @@ const EXIT_NOT_ELEVATED: u8 = 1;
 const EXIT_FAILED: u8 = 2;
 const EXIT_RESTART_REQUIRED: u8 = 3;
 const EXIT_ALREADY_RUNNING: u8 = 4;
+const EXIT_USAGE: u8 = 5;
 
 fn main() -> ExitCode {
     match App::new().run() {
@@ -42,6 +43,11 @@ fn give_up(error: &Error) -> ExitCode {
             eprintln!("InputRedirect is already running in another window.");
             eprintln!("Switch to that window, or close it before starting again.");
             EXIT_ALREADY_RUNNING
+        }
+        Error::Usage(message) => {
+            eprintln!("InputRedirect: {message}.");
+            eprintln!("Pass --mouse, --keyboard, both, or nothing for the menu.");
+            EXIT_USAGE
         }
         Error::RestartRequired(reason) => {
             eprintln!("InputRedirect cannot start yet: {reason}.");

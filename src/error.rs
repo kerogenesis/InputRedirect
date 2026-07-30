@@ -49,4 +49,10 @@ pub enum Error {
 
     #[error("the input hooks could not be installed: {0}")]
     Hook(String),
+
+    /// An argument on the command line was not understood. Kept apart from the
+    /// driver failures because nothing was attempted: the program refuses the
+    /// line before it touches the console or the driver.
+    #[error("{0}")]
+    Usage(String),
 }
