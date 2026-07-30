@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 bitflags = "2"
+bytemuck = { version = "1.25.2", features = ["derive"] }
 tempfile = "3"
 thiserror = "2"
 
