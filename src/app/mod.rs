@@ -42,12 +42,19 @@ impl App {
 
     /// Brings the driver up and then serves the menu until the user leaves.
     ///
-    /// With `--mouse` or `--keyboard` on the command line it switches those
-    /// redirects on instead and waits without a menu; see `run_headless`.
+    /// `--help` / `-h` prints the list of flags and exits before anything is
+    /// claimed. `--mouse` / `-m` or `--keyboard` / `-k` switch those redirects
+    /// on and wait without a menu instead; see `run_headless`.
     pub fn run(mut self) -> Result<Outcome> {
-        // Refused before anything is claimed or installed, so a misspelt flag
-        // fails on the spot rather than half-starting the program.
-        let requested = cli::parse(std::env::args().skip(1))?;
+        // Read before anything is claimed or installed, so a misspelt flag
+        // fails on the spot and `--help` answers without a driver.
+        let request = cli::parse(std::env::args().skip(1))?;
+
+        // Help touches nothing else: it is printed and the program leaves.
+        if request == cli::Request::Help {
+            show_help();
+            return Ok(Outcome::Finished);
+        }
 
         // Held for the whole session: dropping it is what lets the next copy
         // of the program start.
@@ -76,7 +83,7 @@ impl App {
 
         // The command line, not the menu, is driving: switch on what it asked
         // for and wait it out.
-        if requested.any() {
+        if let cli::Request::Redirect(requested) = request {
             return Ok(self.run_headless(requested));
         }
 
@@ -226,4 +233,13 @@ impl Drop for App {
         exit::clean_up();
         self.driver = None;
     }
+}
+
+/// Prints the command-line help and holds the window open long enough to read
+/// it. Like the startup errors, help is shown before the console is prepared,
+/// so it is plain text; `wait_before_the_window_closes` only pauses when the
+/// program owns the window, so `--help` from a shell returns at once.
+fn show_help() {
+    println!("{}", cli::HELP);
+    ui::wait_before_the_window_closes();
 }
