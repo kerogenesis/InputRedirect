@@ -128,7 +128,10 @@ its own pull request with a reason:
   checks the built executable for dynamic CRT imports.
 - The release profile uses fat LTO, one codegen unit, and strips symbols.
 - CI checks that `drivers/` is the expected package, that its catalogues carry
-  a valid Authenticode signature, and that Logitech is what signed them.
+  a valid signature from the Windows Hardware Compatibility Publisher - which
+  is the signature a kernel driver needs, and the only one it can have, since
+  the vendor submits the package and Microsoft signs it - and that the INF files
+  name Logitech as the vendor.
 
 ## Pull requests
 
