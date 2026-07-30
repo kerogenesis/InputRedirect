@@ -235,11 +235,9 @@ impl Drop for App {
     }
 }
 
-/// Prints the command-line help and holds the window open long enough to read
-/// it. Like the startup errors, help is shown before the console is prepared,
-/// so it is plain text; `wait_before_the_window_closes` only pauses when the
-/// program owns the window, so `--help` from a shell returns at once.
+/// Prints the command-line help and returns. Help is shown before the console
+/// is prepared for drawing, so it is plain text, and it does not wait for a
+/// key: a command-line tool that was asked for its usage prints it and exits.
 fn show_help() {
     println!("{}", cli::HELP);
-    ui::wait_before_the_window_closes();
 }
