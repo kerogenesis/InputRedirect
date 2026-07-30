@@ -64,6 +64,10 @@ unsafe_op_in_unsafe_fn = "deny"
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 
+# Every unsafe block here already says why it is sound. The lint keeps it that
+# way: a block without its reasoning is a block nobody can review.
+undocumented_unsafe_blocks = "warn"
+
 # The Win32 surface is casts and wide pointers throughout; forbidding them
 # would only add noise to calls we cannot write any other way.
 cast_possible_truncation = "allow"
