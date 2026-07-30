@@ -60,9 +60,10 @@ impl App {
         exit::watch_for_close();
 
         // A restart is only really owed while the driver is half-removed. If it
-        // is installed and answering, the flag is stale, and offering a restart
-        // that cannot help on every start from now on is the one outcome the
-        // pending flag is meant to avoid.
+        // is installed and answering, the flag is stale - a build that wrote it
+        // non-volatile would leave it set past the reboot that should have
+        // cleared it - and offering a restart that cannot help, every start
+        // from now on, is the one outcome reboot.rs set out to avoid.
         if driver::is_restart_pending() {
             if driver::is_running() {
                 driver::clear_restart_pending();
@@ -79,17 +80,12 @@ impl App {
             return Ok(self.run_headless(requested));
         }
 
-        self.screen.say(
-            Tone::Muted,
-            "Nothing is redirected yet. Press 1 or 2 to start.",
-        );
-
         loop {
             self.redraw();
 
             match ui::wait_for_command(ui::TICK_MS) {
                 // Nothing was pressed: the loop comes back only to refresh the
-                // counters, which is what keeps the screen feeling alive.
+                // counters, which is what makes the screen feel alive.
                 MenuKey::Tick => {}
                 MenuKey::Unknown => self
                     .screen
@@ -101,6 +97,20 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Runs one menu entry. Returns an outcome when the program has to close.
+    fn carry_out(&mut self, command: Command) -> Option<Outcome> {
+        match command {
+            Command::ToggleMouse => self.toggle_mouse(),
+            Command::ToggleKeyboard => self.toggle_keyboard(),
+            Command::StopEverything => self.stop_everything(),
+            Command::RecreateDevices => self.recreate_devices(),
+            Command::RemoveDriver => return self.remove_driver(),
+            Command::Quit => return Some(self.shut_down()),
+        }
+
+        None
     }
 
     /// Switches on the redirects named on the command line, says which ones in
@@ -129,20 +139,6 @@ impl App {
         }
     }
 
-    /// Runs one menu entry. Returns an outcome when the program has to close.
-    fn carry_out(&mut self, command: Command) -> Option<Outcome> {
-        match command {
-            Command::ToggleMouse => self.toggle_mouse(),
-            Command::ToggleKeyboard => self.toggle_keyboard(),
-            Command::StopEverything => self.stop_everything(),
-            Command::RecreateDevices => self.recreate_devices(),
-            Command::RemoveDriver => return self.remove_driver(),
-            Command::Quit => return Some(self.shut_down()),
-        }
-
-        None
-    }
-
     fn start(&mut self) -> Result<()> {
         self.screen.banner();
 
@@ -165,27 +161,69 @@ impl App {
         self.screen.report(Tone::Done, "Ready");
         sleep(SETTLE);
 
+        self.screen.say(
+            Tone::Muted,
+            "Nothing is redirected yet. Press 1 or 2 to start.",
+        );
         Ok(())
     }
 
-    fn redraw(&self) {
-        self.screen.draw(self.dashboard());
+    /// The last screen: says what was switched back before the window closes.
+    fn shut_down(&mut self) -> Outcome {
+        self.screen.begin_screen();
+        self.screen.report(Tone::Working, "Shutting down");
+
+        if let Some(engine) = self.engine.take() {
+            engine.stop();
+        }
+        self.driver = None;
+
+        self.screen
+            .report(Tone::Done, "Your keyboard and mouse are back to normal");
+        self.screen.blank();
+
+        Outcome::Finished
     }
 
-    fn dashboard(&self) -> Dashboard {
-        let engine = self.engine.as_ref();
-        let stats = engine.map(Engine::stats).unwrap_or_default();
-        let driver = self.driver.as_ref();
-        let devices = driver.map(|driver| driver.devices()).unwrap_or_default();
+    pub(super) fn redraw(&mut self) {
+        let dashboard = self.dashboard();
+        self.screen.draw(dashboard);
+    }
+
+    pub(super) fn dashboard(&self) -> Dashboard {
+        let status = self.driver.as_ref().map(|driver| driver.status());
+        let counters = self.engine.as_ref().map(Engine::stats).unwrap_or_default();
 
         Dashboard {
-            mouse_redirect: engine.is_some_and(Engine::is_mouse_enabled),
-            keyboard_redirect: engine.is_some_and(Engine::is_keyboard_enabled),
-            driver_connected: driver.is_some_and(|driver| driver.is_connected()),
-            virtual_keyboard: devices.keyboard,
-            virtual_mouse: devices.mouse,
-            keystrokes: stats.keystrokes,
-            clicks: stats.clicks,
+            mouse_redirect: self.engine.as_ref().is_some_and(Engine::is_mouse_enabled),
+            keyboard_redirect: self
+                .engine
+                .as_ref()
+                .is_some_and(Engine::is_keyboard_enabled),
+            driver_connected: status.is_some_and(|status| status.connected),
+            virtual_keyboard: status.is_some_and(|status| status.virtual_keyboard),
+            virtual_mouse: status.is_some_and(|status| status.virtual_mouse),
+            keystrokes: counters.keystrokes,
+            clicks: counters.clicks,
         }
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        // Quitting from the menu and panicking both end up here. Closing the
+        // window does not - it goes straight to the same cleanup instead.
+        if let Some(engine) = self.engine.take() {
+            engine.stop();
+        }
+
+        exit::clean_up();
+        self.driver = None;
     }
 }
