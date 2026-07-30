@@ -15,7 +15,7 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY,
-    KEY_WRITE, REG_OPTION_VOLATILE, REG_SAM_FLAGS,
+    KEY_WRITE, REG_DWORD, REG_OPTION_VOLATILE, REG_SAM_FLAGS,
 };
 use windows_registry::LOCAL_MACHINE;
 
@@ -26,10 +26,9 @@ const VALUE_NAME: &str = "RestartPending";
 
 /// Records that the machine has to restart before the driver is really gone.
 ///
-/// The key is deleted and re-created on every call so that it is always opened
-/// with `REG_OPTION_VOLATILE`: a key created without that flag would survive a
-/// reboot and leave the program permanently stuck. `windows-registry` does not
-/// expose `REG_OPTION_VOLATILE`, so this function stays hand-written.
+/// Uses raw Win32 APIs directly because `REG_OPTION_VOLATILE` is not exposed
+/// by `windows-registry`, and the delete-then-create pattern that ensures the
+/// key is always volatile has no safe equivalent in that crate.
 pub fn mark_restart_pending() {
     let path = wide(KEY_PATH);
     let name = wide(VALUE_NAME);
@@ -67,7 +66,7 @@ pub fn mark_restart_pending() {
             key,
             PCWSTR(name.as_ptr()),
             None,
-            windows::Win32::System::Registry::REG_DWORD,
+            REG_DWORD,
             Some(&one),
         );
         let _ = RegCloseKey(key);
@@ -96,7 +95,13 @@ pub fn is_restart_pending() -> bool {
 /// Asks Windows to restart, giving the user a few seconds to read why.
 pub fn request_restart() -> bool {
     Command::new(system32("shutdown.exe"))
-        .args(["/r", "/t", "5", "/c", "InputRedirect: finishing the driver removal"])
+        .args([
+            "/r",
+            "/t",
+            "5",
+            "/c",
+            "InputRedirect: finishing the driver removal",
+        ])
         .spawn()
         .is_ok()
 }
