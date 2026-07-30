@@ -1,0 +1,20 @@
+version: 2
+
+# Dependabot only opens the pull request. Each one still goes through CI, which
+# builds with --locked, so a bump that forgot Cargo.lock fails there rather than
+# on a maintainer's machine.
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore

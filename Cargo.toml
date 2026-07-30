@@ -33,6 +33,7 @@ features = [
     "Win32_System_Registry",
     "Win32_System_RestartManager",
     "Win32_System_Services",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
@@ -62,6 +63,10 @@ unsafe_op_in_unsafe_fn = "deny"
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+
+# Every unsafe block here already says why it is sound. The lint keeps it that
+# way: a block without its reasoning is a block nobody can review.
+undocumented_unsafe_blocks = "warn"
 
 # The Win32 surface is casts and wide pointers throughout; forbidding them
 # would only add noise to calls we cannot write any other way.

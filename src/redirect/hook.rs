@@ -242,6 +242,8 @@ fn decided_safely(decide: impl FnOnce() -> Decision) -> Decision {
 
 unsafe extern "system" fn keyboard_hook(code: i32, event: WPARAM, data: LPARAM) -> LRESULT {
     if code < 0 {
+        // SAFETY: the arguments are handed back exactly as Windows passed them
+        // in, and None asks it to find the next hook in the chain itself.
         return unsafe { CallNextHookEx(None, code, event, data) };
     }
 
@@ -259,11 +261,14 @@ unsafe extern "system" fn keyboard_hook(code: i32, event: WPARAM, data: LPARAM) 
         return SWALLOWED;
     }
 
+    // SAFETY: as above - the event travels on untouched.
     unsafe { CallNextHookEx(None, code, event, data) }
 }
 
 unsafe extern "system" fn mouse_hook(code: i32, event: WPARAM, data: LPARAM) -> LRESULT {
     if code < 0 {
+        // SAFETY: the arguments are handed back exactly as Windows passed them
+        // in, and None asks it to find the next hook in the chain itself.
         return unsafe { CallNextHookEx(None, code, event, data) };
     }
 
@@ -276,6 +281,7 @@ unsafe extern "system" fn mouse_hook(code: i32, event: WPARAM, data: LPARAM) -> 
         }
     }
 
+    // SAFETY: as above - the event travels on untouched.
     unsafe { CallNextHookEx(None, code, event, data) }
 }
 

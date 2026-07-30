@@ -39,19 +39,60 @@ jobs:
           key: cargo-${{ runner.os }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: cargo-${{ runner.os }}-${{ steps.toolchain.outputs.version }}-
 
+      # These files are installed into the system driver store, so this is the
+      # step that decides what a user ends up running in the kernel: the package
+      # has to be complete, it has to carry the signature Windows requires of a
+      # kernel driver, and it has to be Logitech's package.
+      #
+      # Those are two separate questions. A kernel driver on x64 cannot be
+      # signed by its vendor - the vendor submits it and Microsoft signs the
+      # catalogue - so the signer says nothing about who wrote it, and the
+      # vendor is stated in the INF.
       - name: Verify the signed driver files
         shell: pwsh
         run: |
-          Get-ChildItem drivers | ForEach-Object {
-            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
-            Write-Host "$($_.Name)  $hash"
+          $expected = @(
+            'logi_joy_bus_enum.cat',
+            'logi_joy_bus_enum.inf',
+            'logi_joy_bus_enum.sys',
+            'logi_joy_vir_hid.cat',
+            'logi_joy_vir_hid.inf',
+            'logi_joy_vir_hid.sys',
+            'logi_joy_xlcore.sys'
+          )
+          $present = @(Get-ChildItem drivers -File | ForEach-Object { $_.Name } | Sort-Object)
+
+          $difference = Compare-Object $expected $present
+          if ($difference) {
+            $names = ($difference | ForEach-Object { $_.InputObject }) -join ', '
+            throw "drivers/ is not the expected package, it differs in: $names"
           }
-          Get-ChildItem drivers -Filter *.cat | ForEach-Object {
-            $signature = Get-AuthenticodeSignature $_.FullName
-            Write-Host "$($_.Name): $($signature.Status) - $($signature.SignerCertificate.Subject)"
+
+          foreach ($catalog in Get-ChildItem drivers -Filter *.cat) {
+            $signature = Get-AuthenticodeSignature $catalog.FullName
+            $subject = $signature.SignerCertificate.Subject
+            Write-Host "$($catalog.Name): $($signature.Status) - $subject"
+
             if ($signature.Status -ne 'Valid') {
-              throw "$($_.Name) is not validly signed: $($signature.Status)"
+              throw "$($catalog.Name) is not validly signed: $($signature.Status)"
             }
+            if ($subject -notmatch 'Windows Hardware Compatibility Publisher') {
+              throw "$($catalog.Name) is signed by $subject, not through the WHQL programme"
+            }
+          }
+
+          foreach ($inf in Get-ChildItem drivers -Filter *.inf) {
+            $text = Get-Content $inf.FullName -Raw
+            if ($text -notmatch '(?im)^\s*Vendor\s*=\s*"Logitech"') {
+              throw "$($inf.Name) does not name Logitech as the vendor"
+            }
+          }
+
+          # Printed, not compared: nothing in the repository records what the
+          # hashes are meant to be. A change to these lines in a pull request
+          # diff is a change to the bytes that get installed.
+          Get-ChildItem drivers -File | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
           }
 
       # Fails when Cargo.toml and Cargo.lock disagree, which is worth saying in
@@ -112,3 +153,23 @@ jobs:
           name: InputRedirect
           path: dist/InputRedirect.exe
           if-no-files-found: error
+
+  # An advisory against a crate this program links into an elevated process is
+  # worth hearing about on the push that introduced it. The job reads Cargo.lock
+  # rather than building, so it needs neither Windows nor the toolchain cache.
+  audit:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      checks: write
+      issues: write
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Audit the dependencies
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

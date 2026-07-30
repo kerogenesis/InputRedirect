@@ -623,9 +623,35 @@ pub(crate) fn wide_path(path: &Path) -> Vec<u16> {
 /// file name: that resolves through PATH, and a writable directory ahead of
 /// System32 would decide what an administrator runs.
 pub(crate) fn system32(program: &str) -> PathBuf {
-    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| OsString::from(r"C:\Windows"));
+    system_directory().join(program)
+}
 
-    Path::new(&root).join("System32").join(program)
+/// The system directory, as Windows itself reports it.
+///
+/// Not `%SystemRoot%`: the environment is inherited from whoever started this
+/// process, and an elevated process must not take the location of the programs
+/// it runs - or of the driver files it compares - from something its parent was
+/// free to set.
+pub(crate) fn system_directory() -> PathBuf {
+    use std::os::windows::ffi::OsStringExt;
+
+    use windows::Win32::Foundation::MAX_PATH;
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    let mut buffer = [0u16; MAX_PATH as usize];
+
+    // SAFETY: the call is given the real length of the buffer and writes no
+    // more than that.
+    let written = unsafe { GetSystemDirectoryW(Some(&mut buffer)) } as usize;
+
+    // Zero means the call failed, and a length past the end means the path did
+    // not fit and nothing was written. Neither can be answered with anything
+    // better than the place Windows is installed in on every machine we run on.
+    if written == 0 || written > buffer.len() {
+        return PathBuf::from(r"C:\Windows\System32");
+    }
+
+    PathBuf::from(OsString::from_wide(&buffer[..written]))
 }
 
 #[cfg(test)]
@@ -687,6 +713,16 @@ mod tests {
             .to_string_lossy()
             .to_lowercase()
             .contains(r"system32\pnputil.exe"));
+    }
+
+    /// Windows answers with the directory it actually loads its programs from,
+    /// whatever the environment says.
+    #[test]
+    fn the_system_directory_is_an_absolute_path_ending_in_system32() {
+        let path = system_directory();
+
+        assert!(path.is_absolute());
+        assert!(path.ends_with("System32") || path.ends_with("system32"));
     }
 
     #[test]
