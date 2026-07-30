@@ -7,6 +7,7 @@
 
 use std::mem::{offset_of, size_of};
 
+use bytemuck::{Pod, Zeroable};
 use windows::Wdk::System::IO::NtDeviceIoControlFile;
 use windows::Win32::Foundation::{HANDLE, NTSTATUS};
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
@@ -32,8 +33,12 @@ const HARDWARE_ID_SIZE: usize = HARDWARE_ID_TEMPLATE.len() * 2 + 4;
 
 /// What the driver expects at the front of a plug request. The report
 /// descriptor follows immediately after it.
+///
+/// `Pod` is what makes the layout the compiler's problem rather than a comment's:
+/// it cannot be derived for a type with padding, which is exactly the property
+/// that has to hold for the bytes to mean to the driver what they mean here.
 #[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Pod, Zeroable)]
 pub struct PlugRequest {
     magic: u32,
     pub device_id: u32,
@@ -49,27 +54,6 @@ pub struct PlugRequest {
     report_descriptor_size: u32,
 }
 
-impl Default for PlugRequest {
-    /// Written out by hand because arrays longer than 32 elements have no
-    /// `Default` of their own, and the hardware id field is 128 bytes wide.
-    fn default() -> Self {
-        Self {
-            magic: 0,
-            device_id: 0,
-            flag: 0,
-            hardware_id_size: 0,
-            hardware_id: [0; 0x80],
-            vendor_id: 0,
-            product_id: 0,
-            device_kind: 0,
-            version: 0,
-            _padding: 0,
-            _reserved: [0; 0xB2 - 0x9C],
-            report_descriptor_size: 0,
-        }
-    }
-}
-
 const _: () = assert!(size_of::<PlugRequest>() == 0xB6);
 const _: () = assert!(offset_of!(PlugRequest, hardware_id) == 0x10);
 const _: () = assert!(offset_of!(PlugRequest, vendor_id) == 0x90);
@@ -80,7 +64,7 @@ const _: () = assert!(offset_of!(PlugRequest, report_descriptor_size) == 0xB2);
 const _: () = assert!(HARDWARE_ID_SIZE <= 0x80);
 
 #[repr(C, packed)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Pod, Zeroable)]
 pub struct UnplugRequest {
     size: u32,
     device_id: u32,
@@ -99,7 +83,7 @@ impl UnplugRequest {
 
     #[must_use]
     pub fn as_bytes(&self) -> Vec<u8> {
-        as_bytes(self)
+        bytemuck::bytes_of(self).to_vec()
     }
 }
 
@@ -168,11 +152,11 @@ pub fn plug_payload(kind: DeviceKind) -> Vec<u8> {
         device_kind: kind.code(),
         version: 0x0100,
         report_descriptor_size: descriptor.len() as u32,
-        ..PlugRequest::default()
+        ..PlugRequest::zeroed()
     };
     header.hardware_id[..hardware_id_bytes.len()].copy_from_slice(&hardware_id_bytes);
 
-    let mut payload = as_bytes(&header);
+    let mut payload = bytemuck::bytes_of(&header).to_vec();
     payload.extend_from_slice(descriptor);
     payload
 }
@@ -188,14 +172,6 @@ pub fn plugged_device_id(payload: &[u8]) -> u32 {
         .get(4..8)
         .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
         .map_or(0, u32::from_le_bytes)
-}
-
-fn as_bytes<T: Copy>(value: &T) -> Vec<u8> {
-    // SAFETY: T is a plain packed structure with no padding to leak and no
-    // pointers; reading it as bytes is exactly what the driver expects.
-    unsafe {
-        std::slice::from_raw_parts(std::ptr::from_ref(value).cast::<u8>(), size_of::<T>()).to_vec()
-    }
 }
 
 /// Sends one request to the driver.
