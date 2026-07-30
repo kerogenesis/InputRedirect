@@ -54,7 +54,7 @@ jobs:
         run: echo "version=$(rustc --version | tr ' ()' '-')" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
