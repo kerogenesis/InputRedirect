@@ -14,10 +14,10 @@ use std::process::Command;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteKeyExW, RegDeleteValueW, RegOpenKeyExW,
-    RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY, KEY_WRITE,
-    REG_OPTION_VOLATILE, REG_SAM_FLAGS,
+    RegCloseKey, RegCreateKeyExW, RegDeleteKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY,
+    KEY_WRITE, REG_DWORD, REG_OPTION_VOLATILE, REG_SAM_FLAGS,
 };
+use windows_registry::LOCAL_MACHINE;
 
 use super::{system32, wide};
 
@@ -25,6 +25,10 @@ const KEY_PATH: &str = r"SOFTWARE\InputRedirect";
 const VALUE_NAME: &str = "RestartPending";
 
 /// Records that the machine has to restart before the driver is really gone.
+///
+/// Uses raw Win32 APIs directly because `REG_OPTION_VOLATILE` is not exposed
+/// by `windows-registry`, and the delete-then-create pattern that ensures the
+/// key is always volatile has no safe equivalent in that crate.
 pub fn mark_restart_pending() {
     let path = wide(KEY_PATH);
     let name = wide(VALUE_NAME);
@@ -62,7 +66,7 @@ pub fn mark_restart_pending() {
             key,
             PCWSTR(name.as_ptr()),
             None,
-            windows::Win32::System::Registry::REG_DWORD,
+            REG_DWORD,
             Some(&one),
         );
         let _ = RegCloseKey(key);
@@ -72,63 +76,20 @@ pub fn mark_restart_pending() {
 /// Forgets the flag. Called when the driver is up and answering, which is the
 /// one situation in which a restart cannot still be owed.
 pub fn clear_restart_pending() {
-    let path = wide(KEY_PATH);
-    let name = wide(VALUE_NAME);
-    let mut key = HKEY::default();
-
-    // SAFETY: the key is closed on every path that opened it, and both strings
-    // are null terminated and outlive the call.
-    unsafe {
-        if RegOpenKeyExW(
-            HKEY_LOCAL_MACHINE,
-            PCWSTR(path.as_ptr()),
-            None,
-            REG_SAM_FLAGS(KEY_WRITE.0 | KEY_WOW64_64KEY.0),
-            &mut key,
-        ) != ERROR_SUCCESS
-        {
-            return;
-        }
-
-        let _ = RegDeleteValueW(key, PCWSTR(name.as_ptr()));
-        let _ = RegCloseKey(key);
+    if let Ok(key) = LOCAL_MACHINE.options().write().open(KEY_PATH) {
+        let _ = key.remove_value(VALUE_NAME);
     }
 }
 
 /// True when the driver was removed and the machine has not restarted yet.
 #[must_use]
 pub fn is_restart_pending() -> bool {
-    let path = wide(KEY_PATH);
-    let name = wide(VALUE_NAME);
-    let mut key = HKEY::default();
-
-    // SAFETY: the key is closed on every path that opened it.
-    unsafe {
-        if RegOpenKeyExW(
-            HKEY_LOCAL_MACHINE,
-            PCWSTR(path.as_ptr()),
-            None,
-            REG_SAM_FLAGS(KEY_READ.0 | KEY_WOW64_64KEY.0),
-            &mut key,
-        ) != ERROR_SUCCESS
-        {
-            return false;
-        }
-
-        let mut value = 0u32;
-        let mut size = std::mem::size_of::<u32>() as u32;
-        let read = RegQueryValueExW(
-            key,
-            PCWSTR(name.as_ptr()),
-            None,
-            None,
-            Some(std::ptr::addr_of_mut!(value).cast()),
-            Some(&mut size),
-        );
-        let _ = RegCloseKey(key);
-
-        read == ERROR_SUCCESS && value == 1
-    }
+    LOCAL_MACHINE
+        .options()
+        .read()
+        .open(KEY_PATH)
+        .and_then(|key| key.get_u32(VALUE_NAME))
+        .is_ok_and(|value| value == 1)
 }
 
 /// Asks Windows to restart, giving the user a few seconds to read why.

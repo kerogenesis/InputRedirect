@@ -16,6 +16,7 @@ bitflags = "2"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 tempfile = "3"
 thiserror = "2"
+windows-registry = "0.6.1"
 
 [dependencies.windows]
 version = "0.62"
