@@ -29,7 +29,7 @@ Compatibility section of the README.
 | ---------------- | ----------------------------------------------------------------- |
 | `src/main.rs`    | Entry point and exit codes                                        |
 | `src/error.rs`   | The crate's error type; every failure path goes through it        |
-| `src/app/`       | Startup, shutdown, single-instance guard, and the menu actions     |
+| `src/app/`       | Startup, shutdown, single-instance guard, consent, menu actions     |
 | `src/driver/`    | Driver install and removal, virtual devices, IOCTLs, the watchdog  |
 | `src/redirect/`  | The hooks, the decision made per event, echo suppression, combos   |
 | `src/hid/`       | HID report formats, modifier flags, scan code tables               |
@@ -202,8 +202,14 @@ pull request description:
 - The offset assertions in `src/driver/ioctl.rs`, which pin down the layout the
   driver expects.
 - The driver verification step in CI.
-- Installing the driver and closing G HUB without asking. Both are what the
-  program is for, and neither affects other Logitech devices.
+- Closing G HUB while the program runs. It claims the same two virtual devices,
+  and none of its own settings are affected.
+- The two questions in `src/app/consent.rs`, and the fact that `Driver::connect`
+  cannot install anything without one of them being answered. Installing a
+  kernel driver outlives the program, so it is asked for rather than assumed;
+  `SECURITY.md` and the README say the same things the screens do, and the three
+  are meant to stay in step. A start that changes nothing asks nothing, which is
+  what keeps the questions worth reading.
 
 ## Releasing
 

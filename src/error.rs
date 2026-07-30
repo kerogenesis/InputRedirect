@@ -22,6 +22,12 @@ pub enum Error {
     #[error("another copy of InputRedirect is already running")]
     AlreadyRunning,
 
+    /// The driver had to be installed or replaced, the user was asked, and the
+    /// answer was no. Nothing went wrong and nothing was changed, which is why
+    /// the sentence does not read like a failure.
+    #[error("the Logitech driver was not installed")]
+    Refused,
+
     #[error("the driver files could not be prepared: {0}")]
     Payload(String),
 

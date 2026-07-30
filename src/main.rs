@@ -18,6 +18,7 @@ const EXIT_NOT_ELEVATED: u8 = 1;
 const EXIT_FAILED: u8 = 2;
 const EXIT_RESTART_REQUIRED: u8 = 3;
 const EXIT_ALREADY_RUNNING: u8 = 4;
+const EXIT_DECLINED: u8 = 5;
 
 fn main() -> ExitCode {
     match App::new().run() {
@@ -42,6 +43,14 @@ fn give_up(error: &Error) -> ExitCode {
             eprintln!("InputRedirect is already running in another window.");
             eprintln!("Switch to that window, or close it before starting again.");
             EXIT_ALREADY_RUNNING
+        }
+        // Not a failure, and it must not read like one: the user was asked and
+        // said no, so the only thing left to confirm is that saying no cost
+        // them nothing.
+        Error::Refused => {
+            eprintln!("InputRedirect cannot redirect anything without the Logitech driver.");
+            eprintln!("Nothing on this computer was changed.");
+            EXIT_DECLINED
         }
         Error::RestartRequired(reason) => {
             eprintln!("InputRedirect cannot start yet: {reason}.");

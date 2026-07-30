@@ -1,6 +1,7 @@
 //! The program as the user experiences it: a screen, a menu and a loop.
 
 mod actions;
+mod consent;
 mod exit;
 mod instance;
 
@@ -105,14 +106,17 @@ impl App {
         // The setup lines scroll past as they happen, so a slow first
         // installation does not look like a frozen program.
         let screen = &self.screen;
-        let driver = Driver::connect(&mut |step: Step| {
-            let tone = if step == Step::InstallingDriver {
-                Tone::Working
-            } else {
-                Tone::Done
-            };
-            screen.report(tone, &step.to_string());
-        })?;
+        let driver = Driver::connect(
+            &mut |step: Step| {
+                let tone = if step == Step::InstallingDriver {
+                    Tone::Working
+                } else {
+                    Tone::Done
+                };
+                screen.report(tone, &step.to_string());
+            },
+            &mut consent::Ask::on(screen),
+        )?;
 
         let driver = Arc::new(driver);
         self.engine = Some(Engine::install(Arc::clone(&driver))?);

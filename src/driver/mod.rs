@@ -19,6 +19,7 @@ pub use payload::ExtractedDrivers;
 pub use reboot::{
     clear_restart_pending, is_restart_pending, mark_restart_pending, request_restart,
 };
+pub use version::{Mismatch, Version};
 
 use std::borrow::Cow;
 use std::ffi::OsString;
@@ -59,7 +60,7 @@ pub enum Step {
     InstallingDriver,
     /// Carries both builds: replacing someone's driver is worth reading the
     /// details of.
-    ReplacingDriver(version::Mismatch),
+    ReplacingDriver(Mismatch),
     DriverReady,
     CleaningPreviousSession,
     RebuildingBus,
@@ -111,6 +112,73 @@ impl<F: FnMut(Step)> Report for F {
     }
 }
 
+/// Who is asked before the driver package on this machine is changed.
+///
+/// Installing a kernel driver is not something a program does on the way to
+/// doing what it was started for. It outlives the window: the package stays in
+/// the driver store, the services stay registered, anti-cheat software looks
+/// for exactly this driver, and on some machines Windows will not turn Memory
+/// Integrity on while it is installed. Removal has always explained itself and
+/// waited for an answer, and installation is the less reversible of the two.
+///
+/// The questions live here rather than in the interface so that the driver layer
+/// cannot install anything without one being answered first.
+pub trait Consent {
+    /// Asked before the driver is installed on a machine that does not have it.
+    fn allow_install(&mut self) -> bool;
+
+    /// Asked before another build of the same driver is replaced with ours,
+    /// which is a change to an installation somebody else is using.
+    fn allow_replacement(&mut self, mismatch: Mismatch) -> bool;
+}
+
+/// What has to happen to the driver package before this program can talk to it.
+///
+/// Worked out before anything on the machine is touched. Two of the three
+/// answers are changes the user has to agree to, and a refusal has to leave the
+/// machine exactly as it was found - which includes G HUB, closed for the rest
+/// of the session by the watchdog that would otherwise already be running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Plan {
+    /// The build this program speaks to is already installed. Nothing to agree
+    /// to, and nothing to ask about on every start.
+    AlreadyInstalled,
+    /// Nothing of this driver is on the machine.
+    Install,
+    /// Another build is installed, and it belongs to whoever put it there.
+    Replace(Mismatch),
+}
+
+/// Decides what the machine needs, without changing it.
+///
+/// A build we did not read the protocol out of answers with an invalid
+/// parameter and no reason - the same thing it says when a device is merely
+/// busy. A protocol is not a version number to be compared for greatness, so
+/// ours goes in whichever way the two differ.
+fn plan_for(bundled: &Path) -> Plan {
+    if !service::driver_installed() {
+        return Plan::Install;
+    }
+
+    match version::mismatch(bundled) {
+        None => Plan::AlreadyInstalled,
+        Some(mismatch) => Plan::Replace(mismatch),
+    }
+}
+
+/// Whether the plan may go ahead, asking only where the machine would change.
+///
+/// A start that changes nothing asks nothing. A question on every start would
+/// teach the user to answer it without reading, which is the outcome this whole
+/// exchange exists to avoid.
+fn approved(plan: Plan, consent: &mut dyn Consent) -> bool {
+    match plan {
+        Plan::AlreadyInstalled => true,
+        Plan::Install => consent.allow_install(),
+        Plan::Replace(mismatch) => consent.allow_replacement(mismatch),
+    }
+}
+
 /// What the interface shows in its status line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Status {
@@ -143,13 +211,25 @@ pub struct Driver {
 impl Driver {
     /// Installs the driver if it is missing, then opens it and creates the two
     /// virtual devices.
-    pub fn connect(report: &mut dyn Report) -> Result<Self> {
+    ///
+    /// Nothing is installed without `consent` agreeing to it first, and a
+    /// refusal is [`Error::Refused`] rather than a failure: the machine is left
+    /// as it was found.
+    pub fn connect(report: &mut dyn Report, consent: &mut dyn Consent) -> Result<Self> {
         if !is_elevated() {
             return Err(Error::NotElevated);
         }
 
         report.step(Step::PreparingFiles);
         let payload = ExtractedDrivers::unpack()?;
+
+        // Asked before the first thing that cannot be taken back. The extracted
+        // files go with the payload when it drops, so a refusal here really does
+        // leave nothing behind.
+        let plan = plan_for(payload.directory());
+        if !approved(plan, consent) {
+            return Err(Error::Refused);
+        }
 
         // G HUB takes the very product ids we ask for, and a product id can
         // only be taken once. Its agent starts itself again a moment after it
@@ -160,31 +240,26 @@ impl Driver {
         }
         let watchdog = ghub::Watchdog::start();
 
-        if service::driver_installed() {
-            // A build we did not read the protocol out of answers with an
-            // invalid parameter and no reason - the same thing it says when a
-            // device is merely busy. A protocol is not a version number to be
-            // compared for greatness, so ours goes in whichever way they differ.
-            match version::mismatch(payload.directory()) {
-                None => {
-                    report.step(Step::DriverReady);
+        match plan {
+            Plan::AlreadyInstalled => {
+                report.step(Step::DriverReady);
 
-                    // Re-binding on every start is not optional: without it the
-                    // first plug after a service restart fails with an invalid
-                    // parameter, because the bus keeps stale state. A fresh
-                    // install does this on its way through.
-                    install::bind_root_device(payload.directory())?;
-                }
-                Some(mismatch) => {
-                    report.step(Step::ReplacingDriver(mismatch));
-                    install::replace(payload.directory())?;
-                    report.step(Step::DriverReady);
-                }
+                // Re-binding on every start is not optional: without it the
+                // first plug after a service restart fails with an invalid
+                // parameter, because the bus keeps stale state. A fresh install
+                // does this on its way through.
+                install::bind_root_device(payload.directory())?;
             }
-        } else {
-            report.step(Step::InstallingDriver);
-            install::install(payload.directory())?;
-            report.step(Step::DriverReady);
+            Plan::Replace(mismatch) => {
+                report.step(Step::ReplacingDriver(mismatch));
+                install::replace(payload.directory())?;
+                report.step(Step::DriverReady);
+            }
+            Plan::Install => {
+                report.step(Step::InstallingDriver);
+                install::install(payload.directory())?;
+                report.step(Step::DriverReady);
+            }
         }
 
         service::start_all();
@@ -663,11 +738,75 @@ mod tests {
     }
 
     /// A machine carrying a 2024 build, against the one this program speaks to.
-    fn mismatch() -> version::Mismatch {
-        version::Mismatch {
-            installed: version::Version::from_words(0x07e8_0001, 0),
-            ours: version::Version::from_words(0x07e5_0001, 0x0555_0000),
+    fn mismatch() -> Mismatch {
+        Mismatch {
+            installed: Version::from_words(0x07e8_0001, 0),
+            ours: Version::from_words(0x07e5_0001, 0x0555_0000),
         }
+    }
+
+    /// An answer decided in advance, which also writes down what it was asked.
+    /// Which question arrives matters as much as the answer: the two screens say
+    /// different things, and the wrong one would ask the user to agree to
+    /// something other than what is about to happen.
+    struct Answer {
+        yes: bool,
+        asked: Vec<&'static str>,
+    }
+
+    impl Answer {
+        fn of(yes: bool) -> Self {
+            Self {
+                yes,
+                asked: Vec::new(),
+            }
+        }
+    }
+
+    impl Consent for Answer {
+        fn allow_install(&mut self) -> bool {
+            self.asked.push("install");
+            self.yes
+        }
+
+        fn allow_replacement(&mut self, _mismatch: Mismatch) -> bool {
+            self.asked.push("replacement");
+            self.yes
+        }
+    }
+
+    /// The common case, and the one that must stay silent: a user who agreed
+    /// once and starts the program every day is not asked again.
+    #[test]
+    fn a_start_that_changes_nothing_asks_nothing() {
+        let mut answer = Answer::of(false);
+
+        assert!(approved(Plan::AlreadyInstalled, &mut answer));
+        assert!(answer.asked.is_empty(), "{:?}", answer.asked);
+    }
+
+    #[test]
+    fn the_driver_is_not_installed_without_a_yes() {
+        let mut refused = Answer::of(false);
+        assert!(!approved(Plan::Install, &mut refused));
+        assert_eq!(refused.asked, ["install"]);
+
+        let mut agreed = Answer::of(true);
+        assert!(approved(Plan::Install, &mut agreed));
+        assert_eq!(agreed.asked, ["install"]);
+    }
+
+    /// Overwriting a build somebody else installed is its own question, not the
+    /// installation one asked again.
+    #[test]
+    fn replacing_another_build_is_asked_about_in_its_own_words() {
+        let mut refused = Answer::of(false);
+        assert!(!approved(Plan::Replace(mismatch()), &mut refused));
+        assert_eq!(refused.asked, ["replacement"]);
+
+        let mut agreed = Answer::of(true);
+        assert!(approved(Plan::Replace(mismatch()), &mut agreed));
+        assert_eq!(agreed.asked, ["replacement"]);
     }
 
     #[test]
