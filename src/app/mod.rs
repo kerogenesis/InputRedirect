@@ -9,6 +9,8 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
+use windows_registry::LOCAL_MACHINE;
+
 use crate::driver::{self, Driver, Step};
 use crate::error::{Error, Result};
 use crate::redirect::Engine;
@@ -16,6 +18,9 @@ use crate::ui::{self, Command, Dashboard, MenuKey, Screen, Tone};
 
 /// Long enough for the setup lines to be read before the screen takes over.
 const SETTLE: Duration = Duration::from_millis(600);
+
+/// The service whose presence means the driver package is installed.
+const DRIVER_SERVICE_KEY: &str = r"SYSTEM\CurrentControlSet\Services\logi_joy_bus_enum";
 
 /// Why the program stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,10 +48,10 @@ impl App {
     /// Brings the driver up and then serves the menu until the user leaves.
     ///
     /// `--help` / `-h` prints the list of flags and exits before anything is
-    /// claimed. `--remove-driver` / `-r` brings the driver up only to take it
-    /// straight back out, the same flow the menu's `R` runs. `--mouse` / `-m`
-    /// or `--keyboard` / `-k` switch those redirects on and wait without a
-    /// menu instead; see `run_headless`.
+    /// claimed. `--remove-driver` / `-r` removes an installed driver without
+    /// installing one when there is nothing to remove. `--mouse` / `-m` or
+    /// `--keyboard` / `-k` switch those redirects on and wait without a menu
+    /// instead; see `run_headless`.
     pub fn run(mut self) -> Result<Outcome> {
         // Read before anything is claimed or installed, so a misspelt flag
         // fails on the spot and `--help` answers without a driver.
@@ -62,6 +67,21 @@ impl App {
         // of the program start.
         let _only_copy = instance::SingleInstance::claim().ok_or(Error::AlreadyRunning)?;
 
+        let restart_pending = driver::is_restart_pending();
+
+        // Driver::connect installs a missing package. A removal request must
+        // never create the very thing it was asked to take away, so answer the
+        // no-op before preparing the console or calling start. A pending
+        // restart is different: removal already happened and still has to be
+        // finished, so the existing restart screen below takes precedence.
+        if request == cli::Request::RemoveDriver
+            && !restart_pending
+            && !driver_is_installed()
+        {
+            println!("InputRedirect: no driver is installed, so there is nothing to remove.");
+            return Ok(Outcome::Finished);
+        }
+
         ui::claim_console();
 
         // From here on the window can be closed at any moment, and the
@@ -73,7 +93,7 @@ impl App {
         // non-volatile would leave it set past the reboot that should have
         // cleared it - and offering a restart that cannot help, every start
         // from now on, is the one outcome reboot.rs set out to avoid.
-        if driver::is_restart_pending() {
+        if restart_pending {
             if driver::is_running() {
                 driver::clear_restart_pending();
             } else {
@@ -87,7 +107,14 @@ impl App {
         // the menu's R does - it confirms, removes, and offers the restart -
         // then ends, rather than dropping into the menu afterwards.
         if request == cli::Request::RemoveDriver {
-            return Ok(self.remove_driver().unwrap_or(Outcome::Finished));
+            if let Some(outcome) = self.remove_driver() {
+                return Ok(outcome);
+            }
+
+            // In menu mode `say` is rendered by the next redraw. There is no
+            // next redraw here, so report the declined operation directly.
+            self.screen.report(Tone::Muted, "Nothing was removed");
+            return Ok(Outcome::Finished);
         }
 
         // The command line, not the menu, is driving: switch on what it asked
@@ -245,6 +272,15 @@ impl Drop for App {
         exit::clean_up();
         self.driver = None;
     }
+}
+
+/// Whether the driver package exists without starting or installing it.
+fn driver_is_installed() -> bool {
+    LOCAL_MACHINE
+        .options()
+        .read()
+        .open(DRIVER_SERVICE_KEY)
+        .is_ok()
 }
 
 /// Prints the command-line help and returns. Help is shown before the console

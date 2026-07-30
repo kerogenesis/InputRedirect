@@ -46,7 +46,7 @@ fn give_up(error: &Error) -> ExitCode {
         }
         Error::Usage(message) => {
             eprintln!("InputRedirect: {message}.");
-            eprintln!("Pass --mouse, --keyboard, both, or nothing for the menu.");
+            eprintln!("Run InputRedirect --help for usage.");
             EXIT_USAGE
         }
         Error::RestartRequired(reason) => {
