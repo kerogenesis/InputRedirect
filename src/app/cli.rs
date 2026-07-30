@@ -25,7 +25,7 @@ Usage:
 Options:
     -m, --mouse       redirect the mouse buttons
     -k, --keyboard    redirect the keyboard
-    -h, --help        show this help and exit
+    -h, --help        show this help
 
 With no options the interactive menu opens. Closing the window or pressing
 Ctrl+C switches everything back and ends the program.";

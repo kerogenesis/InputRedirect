@@ -137,6 +137,9 @@ impl App {
             }
         }
 
+        // A blank line sets this apart from the setup lines that scrolled
+        // past, so the one line worth reading stands on its own.
+        self.screen.blank();
         self.screen.report(Tone::Done, requested.active_message());
 
         // Park rather than spin: there is nothing to do until the control
