@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The cache holds compiled artifacts, and those are only reusable by the
       # exact compiler that produced them.
@@ -167,7 +167,7 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Audit the dependencies
         uses: rustsec/audit-check@v2
