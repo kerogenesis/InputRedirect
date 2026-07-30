@@ -9,7 +9,7 @@
 //! those two apart from the outside, so the version is compared beforehand and
 //! the build this program was written against is the one that runs.
 
-use std::ffi::{c_void, OsString};
+use std::ffi::c_void;
 use std::fmt;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
@@ -19,7 +19,7 @@ use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW, VS_FIXEDFILEINFO,
 };
 
-use super::wide;
+use super::{system_directory, wide};
 
 /// The three binaries the package installs.
 ///
@@ -74,9 +74,7 @@ pub fn installed_binaries() -> Vec<PathBuf> {
 
 /// Where Windows keeps the copy of a driver binary it loads.
 fn installed_path(name: &str) -> PathBuf {
-    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| OsString::from(r"C:\Windows"));
-
-    Path::new(&root).join("System32").join("drivers").join(name)
+    system_directory().join("drivers").join(name)
 }
 
 /// The four numbers Windows shows as the file version of a driver.
