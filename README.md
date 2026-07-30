@@ -18,6 +18,34 @@ and deployed on first start.
 - Windows 10 or 11
 - Administrator rights
 
+## What it does to your computer
+
+Read this once before the first run. The program asks the same question on
+screen and installs nothing until you answer it.
+
+InputRedirect cannot create a virtual keyboard or mouse by itself. It carries
+Logitech's signed driver package and installs it on first start: three kernel
+drivers, added to the Windows driver store and registered as system services.
+They were written by Logitech, not by this project.
+
+Two consequences are worth weighing before you say yes:
+
+- **Memory Integrity.** Windows may refuse to turn Core Isolation / Memory
+  Integrity on while these drivers are installed.
+- **Anti-cheat.** Protected games look for this driver by name and may refuse to
+  run alongside it - see [Compatibility](#compatibility).
+
+The driver stays installed after the window closes. `D` in the menu removes it
+again, after which the computer has to restart to finish the job.
+
+While InputRedirect is running it also keeps **Logitech G HUB closed**, because
+G HUB claims the same two virtual devices and a product id can only be claimed
+once. Profiles, macros and lighting live in G HUB's own files and are applied
+again the next time it starts.
+
+[SECURITY.md](SECURITY.md) writes all of this out as a threat model, including
+where you should not install it.
+
 ## Quick Start
 
 Run `InputRedirect.exe` as administrator and choose an option:
