@@ -22,6 +22,14 @@ pub const VENDOR_ID: u16 = 0x046D;
 pub const KEYBOARD_PRODUCT_ID: u16 = 0xC232;
 pub const MOUSE_PRODUCT_ID: u16 = 0xC231;
 
+/// The hardware id the driver matches on, in the longest form it can take: both
+/// ids are always written as four hex digits, so every device's id is this wide.
+const HARDWARE_ID_TEMPLATE: &str = r"LGHUBDevice\VID_0000&PID_0000";
+
+/// The same as UTF-16, with the two trailing zero units the driver reads as the
+/// end of a double null terminated string.
+const HARDWARE_ID_SIZE: usize = HARDWARE_ID_TEMPLATE.len() * 2 + 4;
+
 /// What the driver expects at the front of a plug request. The report
 /// descriptor follows immediately after it.
 #[repr(C, packed)]
@@ -69,6 +77,7 @@ const _: () = assert!(offset_of!(PlugRequest, product_id) == 0x92);
 const _: () = assert!(offset_of!(PlugRequest, device_kind) == 0x94);
 const _: () = assert!(offset_of!(PlugRequest, version) == 0x98);
 const _: () = assert!(offset_of!(PlugRequest, report_descriptor_size) == 0xB2);
+const _: () = assert!(HARDWARE_ID_SIZE <= 0x80);
 
 #[repr(C, packed)]
 #[derive(Clone, Copy, Default)]
@@ -138,6 +147,7 @@ pub fn plug_payload(kind: DeviceKind) -> Vec<u8> {
     let descriptor = kind.report_descriptor();
 
     // The driver matches on this hardware id when it creates the child device.
+    // Its length is the one HARDWARE_ID_TEMPLATE stands for.
     let hardware_id: Vec<u16> = format!("LGHUBDevice\\VID_{VENDOR_ID:04X}&PID_{product_id:04X}")
         .encode_utf16()
         .collect();
@@ -145,6 +155,7 @@ pub fn plug_payload(kind: DeviceKind) -> Vec<u8> {
         .iter()
         .flat_map(|unit| unit.to_le_bytes())
         .collect();
+    debug_assert_eq!(hardware_id_bytes.len() + 4, HARDWARE_ID_SIZE);
 
     let mut header = PlugRequest {
         magic: 0xB7,
@@ -360,6 +371,18 @@ mod tests {
             &payload[0x10 + declared - 4..0x10 + declared],
             &[0, 0, 0, 0]
         );
+    }
+
+    /// The field is 128 bytes and the id is built at run time, so the id of
+    /// every device has to be the length the compile time assertion is about.
+    #[test]
+    fn the_hardware_id_of_both_devices_is_the_length_that_was_checked() {
+        for kind in [DeviceKind::Keyboard, DeviceKind::Mouse] {
+            let payload = plug_payload(kind);
+            let declared = u32::from_le_bytes(payload[0x0C..0x10].try_into().unwrap()) as usize;
+
+            assert_eq!(declared, HARDWARE_ID_SIZE, "{} id", kind.label());
+        }
     }
 
     #[test]
