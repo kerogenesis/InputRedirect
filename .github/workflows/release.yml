@@ -65,7 +65,8 @@ jobs:
 
       # The checks repeated here are the ones that decide whether the artifact
       # is fit to publish. Formatting and lints are CI's job: they say nothing
-      # about the bytes that ship. This one is kept in step with ci.yml.
+      # about the bytes that ship. This one is kept in step with ci.yml, see
+      # there for why the signer and the vendor are two separate questions.
       - name: Verify the signed driver files
         shell: pwsh
         run: |
@@ -94,8 +95,15 @@ jobs:
             if ($signature.Status -ne 'Valid') {
               throw "$($catalog.Name) is not validly signed: $($signature.Status)"
             }
-            if ($subject -notmatch 'Logitech') {
-              throw "$($catalog.Name) is signed by $subject, not by Logitech"
+            if ($subject -notmatch 'Windows Hardware Compatibility Publisher') {
+              throw "$($catalog.Name) is signed by $subject, not through the WHQL programme"
+            }
+          }
+
+          foreach ($inf in Get-ChildItem drivers -Filter *.inf) {
+            $text = Get-Content $inf.FullName -Raw
+            if ($text -notmatch '(?im)^\s*Vendor\s*=\s*"Logitech"') {
+              throw "$($inf.Name) does not name Logitech as the vendor"
             }
           }
 

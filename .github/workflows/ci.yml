@@ -41,8 +41,13 @@ jobs:
 
       # These files are installed into the system driver store, so this is the
       # step that decides what a user ends up running in the kernel: the package
-      # has to be complete, validly signed, and signed by Logitech. A valid
-      # signature on its own says nothing about who produced the file.
+      # has to be complete, it has to carry the signature Windows requires of a
+      # kernel driver, and it has to be Logitech's package.
+      #
+      # Those are two separate questions. A kernel driver on x64 cannot be
+      # signed by its vendor - the vendor submits it and Microsoft signs the
+      # catalogue - so the signer says nothing about who wrote it, and the
+      # vendor is stated in the INF.
       - name: Verify the signed driver files
         shell: pwsh
         run: |
@@ -71,8 +76,15 @@ jobs:
             if ($signature.Status -ne 'Valid') {
               throw "$($catalog.Name) is not validly signed: $($signature.Status)"
             }
-            if ($subject -notmatch 'Logitech') {
-              throw "$($catalog.Name) is signed by $subject, not by Logitech"
+            if ($subject -notmatch 'Windows Hardware Compatibility Publisher') {
+              throw "$($catalog.Name) is signed by $subject, not through the WHQL programme"
+            }
+          }
+
+          foreach ($inf in Get-ChildItem drivers -Filter *.inf) {
+            $text = Get-Content $inf.FullName -Raw
+            if ($text -notmatch '(?im)^\s*Vendor\s*=\s*"Logitech"') {
+              throw "$($inf.Name) does not name Logitech as the vendor"
             }
           }
 
