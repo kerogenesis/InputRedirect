@@ -84,10 +84,7 @@ impl App {
         loop {
             self.redraw();
             match ui::wait_for_command(ui::TICK_MS) {
-                MenuKey::Tick => {}
-                MenuKey::Unknown => self
-                    .screen
-                    .say(Tone::Warning, "Unknown key. Use 1, 2, 3, 4, R or Q."),
+                MenuKey::Tick | MenuKey::Unknown => {}
                 MenuKey::Chosen(command) => {
                     if let Some(outcome) = self.carry_out(command) {
                         return Ok(outcome);

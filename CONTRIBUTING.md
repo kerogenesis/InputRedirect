@@ -17,7 +17,8 @@ problem, so include:
 - What the program printed. Every failure goes through one error type and comes
   out as a sentence on the console; that sentence is the most useful line in the
   report.
-- Whether Logitech G HUB or another Logitech driver was installed beforehand.
+- Whether Logitech G HUB, Logitech LampArray Service, or another Logitech
+  driver was installed beforehand.
 - What you did, what you expected, and what happened instead.
 
 Anti-cheat software blocking the driver is expected rather than a bug; see the
@@ -202,8 +203,9 @@ pull request description:
 - The offset assertions in `src/driver/ioctl.rs`, which pin down the layout the
   driver expects.
 - The driver verification step in CI.
-- Installing the driver and closing G HUB without asking. Both are what the
-  program is for, and neither affects other Logitech devices.
+- Installing the driver, stopping conflicting Logitech software (G HUB,
+  LampArray service), and restoring it on exit. Both are what the program is
+  for, and neither affects other Logitech devices.
 
 ## Releasing
 
