@@ -10,8 +10,8 @@ mod theme;
 
 pub use console::{claim_console, release_console};
 pub use prompt::{
-    confirm, discard_pending_keys, wait_before_the_window_closes, wait_for_any_key,
-    wait_for_command, Command, MenuKey, TICK_MS,
+    Command, MenuKey, TICK_MS, confirm, discard_pending_keys, wait_before_the_window_closes,
+    wait_for_any_key, wait_for_command,
 };
 pub use screen::{Dashboard, Screen};
 pub use theme::Tone;

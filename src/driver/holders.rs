@@ -13,12 +13,12 @@
 
 use std::path::PathBuf;
 
-use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
 use windows::Win32::System::RestartManager::{
-    RmEndSession, RmGetList, RmRegisterResources, RmStartSession, CCH_RM_SESSION_KEY,
-    RM_PROCESS_INFO,
+    CCH_RM_SESSION_KEY, RM_PROCESS_INFO, RmEndSession, RmGetList, RmRegisterResources,
+    RmStartSession,
 };
+use windows::core::{PCWSTR, PWSTR};
 
 use super::wide;
 

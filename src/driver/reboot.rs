@@ -11,12 +11,12 @@
 
 use std::process::Command;
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY,
-    KEY_WRITE, REG_DWORD, REG_OPTION_VOLATILE, REG_SAM_FLAGS,
+    HKEY, HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY, KEY_WRITE, REG_DWORD, REG_OPTION_VOLATILE,
+    REG_SAM_FLAGS, RegCloseKey, RegCreateKeyExW, RegDeleteKeyExW,
 };
+use windows::core::PCWSTR;
 use windows_registry::LOCAL_MACHINE;
 
 use super::{system32, wide};

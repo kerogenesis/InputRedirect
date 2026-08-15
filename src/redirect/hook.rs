@@ -4,8 +4,8 @@
 //! while that thread pumps messages - so the hooks get a thread of their own,
 //! and the user interface keeps its own.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::mpsc::{channel, Sender};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::mpsc::{Sender, channel};
 use std::thread::JoinHandle;
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
@@ -15,9 +15,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RMENU, VK_RSHIFT, VK_RWIN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, KillTimer, PostThreadMessageW, SetTimer,
-    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, HOOKPROC, KBDLLHOOKSTRUCT,
-    MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOWS_HOOK_ID, WM_KEYDOWN, WM_LBUTTONDOWN,
+    CallNextHookEx, DispatchMessageW, GetMessageW, HHOOK, HOOKPROC, KBDLLHOOKSTRUCT, KillTimer,
+    MSG, MSLLHOOKSTRUCT, PostThreadMessageW, SetTimer, SetWindowsHookExW, TranslateMessage,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOWS_HOOK_ID, WM_KEYDOWN, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
     WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1,
 };
@@ -25,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::error::{Error, Result};
 use crate::hid::{Modifiers, MouseButtons};
 
-use super::{on_button, on_key, Decision};
+use super::{Decision, on_button, on_key};
 
 /// How often the hooks are replaced. Windows drops a low-level hook whose
 /// callback overran `LowLevelHooksTimeout` and says nothing about it, and no

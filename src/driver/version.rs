@@ -14,10 +14,10 @@ use std::fmt;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 
-use windows::core::PCWSTR;
 use windows::Win32::Storage::FileSystem::{
-    GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW, VS_FIXEDFILEINFO,
+    GetFileVersionInfoSizeW, GetFileVersionInfoW, VS_FIXEDFILEINFO, VerQueryValueW,
 };
+use windows::core::PCWSTR;
 
 use super::{system_directory, wide};
 

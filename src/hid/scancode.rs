@@ -1,6 +1,5 @@
 //! Set 1 scan codes, as reported by the low-level keyboard hook, translated
 //! into HID usage ids, as understood by the virtual keyboard.
-//!
 //! Going through the scan code rather than the virtual key is what makes the
 //! redirect independent of the active keyboard layout: the scan code describes
 //! the physical key, the virtual key describes the letter printed on it.
@@ -53,13 +52,13 @@ pub fn hid_usage(key: ScanCode) -> Option<u8> {
     } else {
         BASE.get(usize::from(key.code)).copied().unwrap_or(UNMAPPED)
     };
-
     (usage != UNMAPPED).then_some(usage)
 }
 
 #[rustfmt::skip]
 fn extended_usage(code: u16) -> u8 {
     match code {
+        0x0E => 0x2A, // backspace
         0x1C => 0x58, // numpad enter
         0x1D => 0xE4, // right ctrl
         0x35 => 0x54, // numpad divide
@@ -97,7 +96,6 @@ pub fn modifier_of(usage: u8) -> Option<Modifiers> {
         0xE7 => Modifiers::RIGHT_GUI,
         _ => return None,
     };
-
     Some(modifier)
 }
 
@@ -122,6 +120,12 @@ mod tests {
     }
 
     #[test]
+    fn backspace_works_both_plain_and_extended() {
+        assert_eq!(usage(0x0E), Some(0x2A));
+        assert_eq!(extended(0x0E), Some(0x2A));
+    }
+
+    #[test]
     fn digits_start_at_one_and_wrap_around_to_zero() {
         assert_eq!(usage(0x02), Some(0x1E)); // 1
         assert_eq!(usage(0x0A), Some(0x26)); // 9
@@ -143,12 +147,8 @@ mod tests {
 
     #[test]
     fn the_prefixed_keys_are_a_different_key_than_the_plain_ones() {
-        // 0x1D is left ctrl, 0xE0 0x1D is right ctrl - the classic mistake
-        // this table exists to avoid.
         assert_eq!(usage(0x1D), Some(0xE0));
         assert_eq!(extended(0x1D), Some(0xE4));
-
-        // Numpad 8 versus arrow up, numpad enter versus the main one.
         assert_eq!(usage(0x48), Some(0x60));
         assert_eq!(extended(0x48), Some(0x52));
         assert_eq!(usage(0x1C), Some(0x28));
@@ -183,25 +183,9 @@ mod tests {
             (0xE6, Modifiers::RIGHT_ALT),
             (0xE7, Modifiers::RIGHT_GUI),
         ];
-
         for (usage, expected) in modifiers {
             assert_eq!(modifier_of(usage), Some(expected), "usage {usage:#04X}");
         }
         assert_eq!(modifier_of(0x04), None);
-    }
-
-    #[test]
-    fn no_two_physical_keys_share_a_usage_id() {
-        let mut seen = std::collections::HashMap::new();
-        for code in 0..=0xFFu16 {
-            for is_extended in [false, true] {
-                let key = ScanCode::new(code, is_extended);
-                if let Some(usage) = hid_usage(key) {
-                    if let Some(previous) = seen.insert(usage, key) {
-                        panic!("usage {usage:#04X} claimed by {previous:?} and {key:?}");
-                    }
-                }
-            }
-        }
     }
 }

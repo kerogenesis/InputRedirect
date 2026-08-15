@@ -9,4 +9,4 @@ mod scancode;
 
 pub use keyboard::{KeyboardReport, Modifiers};
 pub use mouse::{MouseButtons, MouseReport};
-pub use scancode::{modifier_of, ScanCode};
+pub use scancode::{ScanCode, modifier_of};

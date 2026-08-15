@@ -11,7 +11,7 @@
 //! Only presses are decided here. A release is decided by what the virtual
 //! keyboard is actually holding, which only the report knows.
 
-use crate::hid::{modifier_of, Modifiers};
+use crate::hid::{Modifiers, modifier_of};
 
 #[derive(Debug, Default)]
 pub struct ComboWatcher {

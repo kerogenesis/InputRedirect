@@ -6,17 +6,17 @@
 //! where the user is expected to answer. All of them are put back the way they
 //! were when the program leaves.
 
-use std::io::{stdout, Write};
+use std::io::{Write, stdout};
 use std::sync::OnceLock;
 
-use windows::core::BOOL;
 use windows::Win32::System::Console::{
-    FlushConsoleInputBuffer, GetConsoleCursorInfo, GetConsoleMode, GetConsoleOutputCP,
-    GetConsoleScreenBufferInfo, GetStdHandle, SetConsoleCursorInfo, SetConsoleCursorPosition,
-    SetConsoleMode, SetConsoleOutputCP, CONSOLE_CURSOR_INFO, CONSOLE_MODE,
-    CONSOLE_SCREEN_BUFFER_INFO, COORD, ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_INPUT_HANDLE,
-    STD_OUTPUT_HANDLE,
+    CONSOLE_CURSOR_INFO, CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, COORD,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, FlushConsoleInputBuffer, GetConsoleCursorInfo,
+    GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle, STD_INPUT_HANDLE,
+    STD_OUTPUT_HANDLE, SetConsoleCursorInfo, SetConsoleCursorPosition, SetConsoleMode,
+    SetConsoleOutputCP,
 };
+use windows::core::BOOL;
 
 const UTF8: u32 = 65001;
 

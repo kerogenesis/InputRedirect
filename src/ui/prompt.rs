@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Console::{
-    GetConsoleProcessList, GetStdHandle, ReadConsoleInputW, INPUT_RECORD, KEY_EVENT,
+    GetConsoleProcessList, GetStdHandle, INPUT_RECORD, KEY_EVENT, ReadConsoleInputW,
     STD_INPUT_HANDLE,
 };
-use windows::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+use windows::Win32::System::Threading::{INFINITE, WaitForSingleObject};
 
 use super::console;
 

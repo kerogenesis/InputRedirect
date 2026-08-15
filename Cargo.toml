@@ -1,7 +1,7 @@
 [package]
 name = "input-redirect"
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
 rust-version = "1.85"
 description = "Routes the local keyboard, touchpad and mouse through a signed Logitech HID driver"
 license = "MIT"
@@ -54,7 +54,9 @@ embed-resource = "3"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
+debug = false
 strip = true
+panic = "unwind"
 
 # Groups take a lower priority than the single lints below them, so the
 # individual settings win whatever order Cargo reads the table in.

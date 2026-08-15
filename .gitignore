@@ -20,6 +20,8 @@
 *.swp
 *.swo
 *~
+.omo/
+.codegraph/
 .DS_Store
 Thumbs.db
 desktop.ini
