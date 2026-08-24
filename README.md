@@ -33,8 +33,8 @@ Run `InputRedirect.exe` as administrator and choose an option:
 | `R` | Remove the driver |
 | `Q` | Quit |
 
-`1` and `2` are switches - press again to turn them off. Closing the window turns the
-redirect off.
+`1` and `2` are switches - press again to turn them off.  
+Closing the window turns the redirect off.
 
 ## Command line
 
@@ -56,11 +56,12 @@ cargo build --release
 cargo test
 ```
 
-The binary lands in `target/x86_64-pc-windows-msvc/release/InputRedirect.exe`.
+The binary lands in `target/x86_64-pc-windows-msvc/release/InputRedirect.exe`.  
 Ready-made builds of the latest commit are published under
-[Releases](../../releases/tag/latest).
+[Releases](../../releases).
 
 ## Compatibility
-Note that some anti-cheat systems block the driver used by InputRedirect. As a result, the utility may not function in games protected by those systems.
+Note that some anti-cheat systems block the driver used by InputRedirect.  
+As a result, the utility may not function in games protected by those systems.
 
 At least it still works with a certain 20+ year old Korean MMO ;)
